@@ -13,19 +13,20 @@ import {SwapParams} from "@uniswap/v4-core/src/types/PoolOperation.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 
-// Import Juicebox protocol interfaces from nana-core
-import {IJBTokens} from "../interfaces/IJBTokens.sol";
-import {IJBToken} from "../interfaces/IJBToken.sol";
-import {IJBMultiTerminal} from "../interfaces/IJBMultiTerminal.sol";
-import {IJBController} from "../interfaces/IJBController.sol";
-import {JBRuleset} from "../structs/JBRuleset.sol";
-import {JBRulesetMetadata} from "../structs/JBRulesetMetadata.sol";
+// Import Juicebox protocol interfaces
+import {IJBTokens} from "./interfaces/IJBTokens.sol";
+import {IJBToken} from "./interfaces/IJBToken.sol";
+import {IJBMultiTerminal} from "./interfaces/IJBMultiTerminal.sol";
+import {IJBController} from "./interfaces/IJBController.sol";
+
+import {JBRuleset} from "./structs/JBRuleset.sol";
+import {JBRulesetMetadata} from "./structs/JBRulesetMetadata.sol";
 
 /// @title JBUniswapV4Hook
 /// @notice Official Juicebox integration for Uniswap v4 that provides price comparison and optimal routing
 /// @dev This hook compares prices between Uniswap pools and Juicebox projects, then routes to the cheaper option
 /// @custom:security-contact security@juicebox.money
-contract JBUniswapV4Hook is BasecdHook {
+contract JBUniswapV4Hook is BaseHook {
     using PoolIdLibrary for PoolKey;
     using SafeERC20 for IERC20;
 
