@@ -90,7 +90,9 @@ library EasyPosm {
         uint256 balance1Before = currency1.balanceOf(address(this));
 
         uint256 valueToPass = currency0.isAddressZero() ? amount0Max : 0;
-        posm.modifyLiquidities{value: valueToPass}(
+        posm.modifyLiquidities{
+            value: valueToPass
+        }(
             abi.encode(
                 abi.encodePacked(
                     uint8(Actions.INCREASE_LIQUIDITY), uint8(Actions.CLOSE_CURRENCY), uint8(Actions.CLOSE_CURRENCY)
