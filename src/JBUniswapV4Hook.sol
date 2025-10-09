@@ -19,7 +19,6 @@ import {FixedPoint96} from "@uniswap/v4-core/src/libraries/FixedPoint96.sol";
 import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
-import {SafeCast} from "@uniswap/v4-core/src/libraries/SafeCast.sol";
 
 // Import Juicebox protocol interfaces
 import {IJBTokens} from "./interfaces/IJBTokens.sol";
@@ -39,14 +38,11 @@ contract JBUniswapV4Hook is BaseHook {
     using PoolIdLibrary for PoolKey;
     using StateLibrary for IPoolManager;
     using SafeERC20 for IERC20;
-    using SafeCast for uint256;
 
     //*********************************************************************//
     // --------------------------- custom errors ------------------------- //
     //*********************************************************************//
 
-    error JBUniswapV4Hook_PaymentFailed();
-    error JBUniswapV4Hook_PriceFeedNotFound(uint256 pricingCurrency, uint256 unitCurrency);
     error JBUniswapV4Hook_InvalidCurrencyId();
 
     //*********************************************************************//
