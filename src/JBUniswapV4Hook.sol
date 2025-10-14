@@ -279,7 +279,7 @@ contract JBUniswapV4Hook is BaseHook {
         // Get pool liquidity - simplified: we use a basic estimation
         // In production, this should account for liquidity distribution across ticks
         // For now, return 0 to indicate we need proper implementation
-        // TODO: Implement proper swap output calculation using SqrtPriceMath and SwapMath
+        // TODO: This should be using TWAP style price calucation or fork
 
         // For a basic estimate using current spot price:
         // Calculate Q192 = 2^192
@@ -388,8 +388,6 @@ contract JBUniswapV4Hook is BaseHook {
 
         // If Juicebox gives more tokens, route through Juicebox
         if (juiceboxBetter && juiceboxExpectedTokens > 0) {
-            emit RouteSelected(poolId, true, juiceboxExpectedTokens, juiceboxExpectedTokens - uniswapExpectedTokens);
-
             // Route the swap through Juicebox instead of Uniswap
             uint256 tokensReceived = _routeToJuicebox(projectId, inputCurrency, outputCurrency, amountIn, swapper);
 
@@ -426,6 +424,8 @@ contract JBUniswapV4Hook is BaseHook {
         // Step 1: Take input tokens from PoolManager to this hook contract
         // This debits the swapper's account and gives tokens to the hook
         poolManager.take(inputCurrency, address(this), amountIn);
+
+        //router ----> poolManager +++++++ ----> take tokens from poolManager to this contract ==== neutral delta 
 
         address tokenIn = Currency.unwrap(inputCurrency);
         address tokenOut = Currency.unwrap(outputCurrency);
