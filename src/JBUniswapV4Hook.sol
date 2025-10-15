@@ -50,7 +50,7 @@ contract JBUniswapV4Hook is BaseHook {
     //*********************************************************************//
 
     error JBUniswapV4Hook_InvalidCurrencyId();
-    
+
     //*********************************************************************//
     // ---------------------------- structs ------------------------------ //
     //*********************************************************************//
@@ -100,9 +100,9 @@ contract JBUniswapV4Hook is BaseHook {
     /// @notice Mapping from token address to Juicebox currency ID
     mapping(address => uint256) public currencyIdOf;
 
-    /// @notice The list of observations for a given pool ID  
+    /// @notice The list of observations for a given pool ID
     mapping(PoolId => Oracle.Observation[65535]) public observations;
-    
+
     /// @notice The current observation array state for the given pool ID
     mapping(PoolId => ObservationState) public states;
 
@@ -167,7 +167,7 @@ contract JBUniswapV4Hook is BaseHook {
         if (currencyId == 0) revert JBUniswapV4Hook_InvalidCurrencyId();
         currencyIdOf[token] = currencyId;
     }
-    
+
     /// @notice Increase the oracle cardinality for a pool
     /// @param poolId The pool ID
     /// @param cardinalityNext The new cardinality target
@@ -211,12 +211,9 @@ contract JBUniswapV4Hook is BaseHook {
         view
         returns (uint256 expectedTokens)
     {
-        try CONTROLLER.currentRulesetOf(projectId) returns (JBRuleset memory ruleset, JBRulesetMetadata memory) {
-            // Weight represents tokens issued per ETH paid
-            expectedTokens = (ruleset.weight * ethAmount) / 1e18;
-        } catch {
-            expectedTokens = 0;
-        }
+        (JBRuleset memory ruleset,) = CONTROLLER.currentRulesetOf(projectId);
+        // Weight represents tokens issued per ETH paid
+        expectedTokens = (ruleset.weight * ethAmount) / 1e18;
     }
 
     /// @notice Calculate expected tokens for a given payment amount in any currency
@@ -230,12 +227,8 @@ contract JBUniswapV4Hook is BaseHook {
         returns (uint256 expectedTokens)
     {
         // Get the project's weight (tokens per ETH)
-        uint256 tokensPerETH;
-        try CONTROLLER.currentRulesetOf(projectId) returns (JBRuleset memory ruleset, JBRulesetMetadata memory) {
-            tokensPerETH = ruleset.weight;
-        } catch {
-            return 0;
-        }
+        (JBRuleset memory ruleset,) = CONTROLLER.currentRulesetOf(projectId);
+        uint256 tokensPerETH = ruleset.weight;
 
         // If payment is in ETH, calculate directly
         if (paymentToken == NATIVE_ETH) {
@@ -250,31 +243,12 @@ contract JBUniswapV4Hook is BaseHook {
         }
 
         // Get the decimals of the payment token
-        uint8 paymentTokenDecimals;
-        try IERC20Metadata(paymentToken).decimals() returns (uint8 decimals) {
-            paymentTokenDecimals = decimals;
-        } catch {
-            // If we can't get decimals, assume 18
-            // Maybe all payment tokens are 18 decimals?
-            paymentTokenDecimals = 18;
-        }
+        uint8 paymentTokenDecimals = IERC20Metadata(paymentToken).decimals();
 
         // Get the price: how much ETH per 1 unit of payment token
         // pricePerUnitOf returns the price of unitCurrency (paymentToken) in terms of pricingCurrency (ETH)
         // The result is scaled by 10^decimals (18 in this case)
-        uint256 ethPerPaymentToken;
-        try PRICES.pricePerUnitOf(projectId, ETH_CURRENCY_ID, paymentCurrencyId, 18) returns (uint256 price) {
-            ethPerPaymentToken = price;
-        } catch {
-            // Try using default price feeds (projectId = 0)
-            try PRICES.pricePerUnitOf(
-                PRICES.DEFAULT_PROJECT_ID(), ETH_CURRENCY_ID, paymentCurrencyId, 18
-            ) returns (uint256 price) {
-                ethPerPaymentToken = price;
-            } catch {
-                return 0;
-            }
-        }
+        uint256 ethPerPaymentToken = PRICES.pricePerUnitOf(projectId, ETH_CURRENCY_ID, paymentCurrencyId, 18);
 
         // Convert payment amount to ETH equivalent
         // paymentAmount is in native token decimals, price is per 1 whole token with 18 decimal precision
@@ -302,19 +276,14 @@ contract JBUniswapV4Hook is BaseHook {
     /// @param amountIn The input amount
     /// @param zeroForOne Whether swapping token0 for token1
     /// @return estimatedOut The estimated output amount
-    function estimateUniswapOutput(
-        PoolId poolId,
-        PoolKey memory key,
-        uint256 amountIn,
-        bool zeroForOne
-    )
+    function estimateUniswapOutput(PoolId poolId, PoolKey memory key, uint256 amountIn, bool zeroForOne)
         public
         view
         returns (uint256 estimatedOut)
     {
         // Get TWAP price instead of spot price to prevent manipulation
         uint160 sqrtPriceX96TWAP = _getTWAPSqrtPrice(poolId);
-        
+
         // If TWAP is not available (not enough observations), fallback to spot price
         if (sqrtPriceX96TWAP == 0) {
             (sqrtPriceX96TWAP,,,) = poolManager.getSlot0(poolId);
@@ -344,50 +313,46 @@ contract JBUniswapV4Hook is BaseHook {
 
         return estimatedOut;
     }
-    
+
     /// @notice Get the TWAP sqrt price for a pool
     /// @param poolId The pool ID
     /// @return sqrtPriceX96 The TWAP sqrt price, or 0 if not enough observations
     function _getTWAPSqrtPrice(PoolId poolId) internal view returns (uint160) {
         ObservationState memory state = states[poolId];
-        
+
         // Need at least 2 observations for TWAP
         if (state.cardinality < 2) {
             return 0;
         }
-        
+
         // Get current pool state for observation
         (, int24 tick,, uint128 liquidity) = poolManager.getSlot0(poolId);
-        
+
         uint32 currentTime = uint32(block.timestamp);
-        
+
         // Calculate the target time (TWAP_PERIOD seconds ago)
         uint32 oldestAllowedTime = currentTime > TWAP_PERIOD ? currentTime - TWAP_PERIOD : 0;
-        
+
         // Get oldest observation timestamp
         Oracle.Observation memory oldestObs = observations[poolId][(state.index + 1) % state.cardinality];
         if (!oldestObs.initialized) {
             oldestObs = observations[poolId][0];
         }
-        
+
         // If we don't have observations old enough, return 0
         if (oldestObs.blockTimestamp > oldestAllowedTime) {
             return 0;
         }
-        
+
         // Observe the TWAP
-        try this.observeTWAP(poolId, TWAP_PERIOD, tick, state.index, liquidity, state.cardinality) returns (
-            int24 arithmeticMeanTick
-        ) {
-            // Convert tick to sqrtPriceX96
-            return TickMath.getSqrtPriceAtTick(arithmeticMeanTick);
-        } catch {
-            // If observation fails, return 0 to fallback to spot
-            return 0;
-        }
+        int24 arithmeticMeanTick =
+            this.observeTWAP(poolId, TWAP_PERIOD, tick, state.index, liquidity, state.cardinality);
+
+        // Convert tick to sqrtPriceX96
+        return TickMath.getSqrtPriceAtTick(arithmeticMeanTick);
     }
-    
-    /// @notice Observe TWAP tick (external to allow try/catch)
+
+    /// @notice Observe TWAP tick
     /// @param poolId The pool ID
     /// @param secondsAgo Seconds in the past to calculate TWAP from
     /// @param tick Current tick
@@ -404,15 +369,15 @@ contract JBUniswapV4Hook is BaseHook {
         uint16 cardinality
     ) external view returns (int24 arithmeticMeanTick) {
         uint32 currentTime = uint32(block.timestamp);
-        
+
         // Get tick cumulative for current time
-        (int48 tickCumulativeCurrent,) = 
+        (int48 tickCumulativeCurrent,) =
             observations[poolId].observeSingle(currentTime, 0, tick, index, liquidity, cardinality);
-        
+
         // Get tick cumulative for secondsAgo
-        (int48 tickCumulativePast,) = 
+        (int48 tickCumulativePast,) =
             observations[poolId].observeSingle(currentTime, secondsAgo, tick, index, liquidity, cardinality);
-        
+
         // Calculate arithmetic mean tick
         arithmeticMeanTick = int24((tickCumulativeCurrent - tickCumulativePast) / int48(uint48(secondsAgo)));
     }
@@ -425,23 +390,14 @@ contract JBUniswapV4Hook is BaseHook {
     /// @param key The pool key
     /// @param tick The initial tick
     /// @return selector The function selector
-    function _afterInitialize(address, PoolKey calldata key, uint160, int24 tick) 
-        internal 
-        override 
-        returns (bytes4) 
-    {
+    function _afterInitialize(address, PoolKey calldata key, uint160, int24 tick) internal override returns (bytes4) {
         PoolId poolId = key.toId();
-        
+
         // Initialize oracle with first observation
-        (uint16 cardinality, uint16 cardinalityNext) = 
-            observations[poolId].initialize(uint32(block.timestamp), tick);
-        
-        states[poolId] = ObservationState({
-            index: 0,
-            cardinality: cardinality,
-            cardinalityNext: cardinalityNext
-        });
-        
+        (uint16 cardinality, uint16 cardinalityNext) = observations[poolId].initialize(uint32(block.timestamp), tick);
+
+        states[poolId] = ObservationState({index: 0, cardinality: cardinality, cardinalityNext: cardinalityNext});
+
         return BaseHook.afterInitialize.selector;
     }
 
@@ -449,37 +405,27 @@ contract JBUniswapV4Hook is BaseHook {
     /// @param key The pool key
     /// @return selector The function selector
     /// @return delta The delta to return (zero in our case)
-    function _afterSwap(
-        address,
-        PoolKey calldata key,
-        SwapParams calldata,
-        BalanceDelta,
-        bytes calldata
-    ) internal override returns (bytes4, int128) {
+    function _afterSwap(address, PoolKey calldata key, SwapParams calldata, BalanceDelta, bytes calldata)
+        internal
+        override
+        returns (bytes4, int128)
+    {
         PoolId poolId = key.toId();
-        
+
         // Get current pool state
         (, int24 tick,, uint128 liquidity) = poolManager.getSlot0(poolId);
-        
+
         ObservationState memory state = states[poolId];
-        
+
         // Write new observation
-        (uint16 indexUpdated, uint16 cardinalityUpdated) = observations[poolId].write(
-            state.index,
-            uint32(block.timestamp),
-            tick,
-            liquidity,
-            state.cardinality,
-            state.cardinalityNext
-        );
-        
+        (uint16 indexUpdated, uint16 cardinalityUpdated) = observations[poolId]
+        .write(state.index, uint32(block.timestamp), tick, liquidity, state.cardinality, state.cardinalityNext);
+
         // Update state
         states[poolId] = ObservationState({
-            index: indexUpdated,
-            cardinality: cardinalityUpdated,
-            cardinalityNext: state.cardinalityNext
+            index: indexUpdated, cardinality: cardinalityUpdated, cardinalityNext: state.cardinalityNext
         });
-        
+
         return (BaseHook.afterSwap.selector, 0);
     }
 
@@ -597,8 +543,6 @@ contract JBUniswapV4Hook is BaseHook {
         // Step 1: Take input tokens from PoolManager to this hook contract
         // This debits the swapper's account and gives tokens to the hook
         poolManager.take(inputCurrency, address(this), amountIn);
-
-        //router ----> poolManager +++++++ ----> take tokens from poolManager to this contract ==== neutral delta 
 
         address tokenIn = Currency.unwrap(inputCurrency);
         address tokenOut = Currency.unwrap(outputCurrency);
