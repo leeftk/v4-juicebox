@@ -11,14 +11,19 @@ import {
     BeforeSwapDeltaLibrary,
     toBeforeSwapDelta
 } from "@uniswap/v4-core/src/types/BeforeSwapDelta.sol";
+import {BalanceDelta} from "@uniswap/v4-core/src/types/BalanceDelta.sol";
 import {Currency} from "@uniswap/v4-core/src/types/Currency.sol";
 import {SwapParams} from "@uniswap/v4-core/src/types/PoolOperation.sol";
 import {StateLibrary} from "@uniswap/v4-core/src/libraries/StateLibrary.sol";
 import {FullMath} from "@uniswap/v4-core/src/libraries/FullMath.sol";
 import {FixedPoint96} from "@uniswap/v4-core/src/libraries/FixedPoint96.sol";
+import {TickMath} from "@uniswap/v4-core/src/libraries/TickMath.sol";
 import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+
+// Import Oracle library for TWAP
+import {Oracle} from "./libraries/Oracle.sol";
 
 // Import Juicebox protocol interfaces
 import {IJBTokens} from "./interfaces/IJBTokens.sol";
@@ -38,12 +43,27 @@ contract JBUniswapV4Hook is BaseHook {
     using PoolIdLibrary for PoolKey;
     using StateLibrary for IPoolManager;
     using SafeERC20 for IERC20;
+    using Oracle for Oracle.Observation[65535];
 
     //*********************************************************************//
     // --------------------------- custom errors ------------------------- //
     //*********************************************************************//
 
     error JBUniswapV4Hook_InvalidCurrencyId();
+    
+    //*********************************************************************//
+    // ---------------------------- structs ------------------------------ //
+    //*********************************************************************//
+
+    /// @notice Tracks the oracle observation state for a pool
+    /// @member index The index of the last written observation for the pool
+    /// @member cardinality The cardinality of the observations array for the pool
+    /// @member cardinalityNext The cardinality target of the observations array for the pool
+    struct ObservationState {
+        uint16 index;
+        uint16 cardinality;
+        uint16 cardinalityNext;
+    }
 
     //*********************************************************************//
     // --------------------- immutable properties  ----------------------- //
@@ -67,6 +87,9 @@ contract JBUniswapV4Hook is BaseHook {
     /// @notice Native ETH address representation
     address public constant NATIVE_ETH = address(0);
 
+    /// @notice TWAP period in seconds (30 minutes by default)
+    uint32 public constant TWAP_PERIOD = 1800;
+
     //*********************************************************************//
     // --------------------- public stored properties -------------------- //
     //*********************************************************************//
@@ -76,6 +99,12 @@ contract JBUniswapV4Hook is BaseHook {
 
     /// @notice Mapping from token address to Juicebox currency ID
     mapping(address => uint256) public currencyIdOf;
+
+    /// @notice The list of observations for a given pool ID  
+    mapping(PoolId => Oracle.Observation[65535]) public observations;
+    
+    /// @notice The current observation array state for the given pool ID
+    mapping(PoolId => ObservationState) public states;
 
     //*********************************************************************//
     // ---------------------------- events ------------------------------- //
@@ -138,6 +167,15 @@ contract JBUniswapV4Hook is BaseHook {
         if (currencyId == 0) revert JBUniswapV4Hook_InvalidCurrencyId();
         currencyIdOf[token] = currencyId;
     }
+    
+    /// @notice Increase the oracle cardinality for a pool
+    /// @param poolId The pool ID
+    /// @param cardinalityNext The new cardinality target
+    function increaseCardinalityNext(PoolId poolId, uint16 cardinalityNext) external {
+        ObservationState memory state = states[poolId];
+        uint16 cardinalityNextNew = observations[poolId].grow(state.cardinality, cardinalityNext);
+        states[poolId].cardinalityNext = cardinalityNextNew;
+    }
 
     //*********************************************************************//
     // ------------------------- public views ---------------------------- //
@@ -148,13 +186,13 @@ contract JBUniswapV4Hook is BaseHook {
     function getHookPermissions() public pure override returns (Hooks.Permissions memory) {
         return Hooks.Permissions({
             beforeInitialize: false,
-            afterInitialize: false,
+            afterInitialize: true, // Initialize oracle observations
             beforeAddLiquidity: false,
             afterAddLiquidity: false,
             beforeRemoveLiquidity: false,
             afterRemoveLiquidity: false,
             beforeSwap: true,
-            afterSwap: false,
+            afterSwap: true, // Record oracle observations
             beforeDonate: false,
             afterDonate: false,
             beforeSwapReturnDelta: true, // Enable to override swap behavior
@@ -217,6 +255,7 @@ contract JBUniswapV4Hook is BaseHook {
             paymentTokenDecimals = decimals;
         } catch {
             // If we can't get decimals, assume 18
+            // Maybe all payment tokens are 18 decimals?
             paymentTokenDecimals = 18;
         }
 
@@ -256,16 +295,16 @@ contract JBUniswapV4Hook is BaseHook {
         expectedTokens = (tokensPerETH * ethEquivalent) / 1e18;
     }
 
-    /// @notice Estimate expected output tokens from a Uniswap swap
-    /// @dev This is a simplified estimation that doesn't account for multi-tick swaps or complex price impact
+    /// @notice Estimate expected output tokens from a Uniswap swap using TWAP
+    /// @dev Uses time-weighted average price to prevent manipulation
     /// @param poolId The pool ID
+    /// @param key The pool key
     /// @param amountIn The input amount
     /// @param zeroForOne Whether swapping token0 for token1
     /// @return estimatedOut The estimated output amount
     function estimateUniswapOutput(
         PoolId poolId,
-        PoolKey memory,
-        /* key */
+        PoolKey memory key,
         uint256 amountIn,
         bool zeroForOne
     )
@@ -273,18 +312,17 @@ contract JBUniswapV4Hook is BaseHook {
         view
         returns (uint256 estimatedOut)
     {
-        // Get current pool state
-        (uint160 sqrtPriceX96,,,) = poolManager.getSlot0(poolId);
+        // Get TWAP price instead of spot price to prevent manipulation
+        uint160 sqrtPriceX96TWAP = _getTWAPSqrtPrice(poolId);
+        
+        // If TWAP is not available (not enough observations), fallback to spot price
+        if (sqrtPriceX96TWAP == 0) {
+            (sqrtPriceX96TWAP,,,) = poolManager.getSlot0(poolId);
+        }
 
-        // Get pool liquidity - simplified: we use a basic estimation
-        // In production, this should account for liquidity distribution across ticks
-        // For now, return 0 to indicate we need proper implementation
-        // TODO: This should be using TWAP style price calucation or fork
-
-        // For a basic estimate using current spot price:
         // Calculate Q192 = 2^192
         uint256 Q192 = uint256(FixedPoint96.Q96) * FixedPoint96.Q96;
-        uint256 priceSquared = uint256(sqrtPriceX96) * sqrtPriceX96;
+        uint256 priceSquared = uint256(sqrtPriceX96TWAP) * sqrtPriceX96TWAP;
 
         if (zeroForOne) {
             // Selling token0 for token1
@@ -298,17 +336,152 @@ contract JBUniswapV4Hook is BaseHook {
             estimatedOut = FullMath.mulDiv(amountIn, Q192, priceSquared);
         }
 
-        // Apply a simple fee estimate (subtract ~0.3% for 3000 fee tier)
-        // In reality, fee should be read from the pool
-        // Assuming 3000 = 0.3%
-        estimatedOut = (estimatedOut * 997) / 1000; // 0.3% fee
+        // Apply fee from pool key
+        // fee is in hundredths of a bip, so 3000 = 0.3%
+        if (key.fee > 0) {
+            estimatedOut = estimatedOut - FullMath.mulDiv(estimatedOut, key.fee, 1000000);
+        }
 
         return estimatedOut;
+    }
+    
+    /// @notice Get the TWAP sqrt price for a pool
+    /// @param poolId The pool ID
+    /// @return sqrtPriceX96 The TWAP sqrt price, or 0 if not enough observations
+    function _getTWAPSqrtPrice(PoolId poolId) internal view returns (uint160) {
+        ObservationState memory state = states[poolId];
+        
+        // Need at least 2 observations for TWAP
+        if (state.cardinality < 2) {
+            return 0;
+        }
+        
+        // Get current pool state for observation
+        (, int24 tick,, uint128 liquidity) = poolManager.getSlot0(poolId);
+        
+        uint32 currentTime = uint32(block.timestamp);
+        
+        // Calculate the target time (TWAP_PERIOD seconds ago)
+        uint32 oldestAllowedTime = currentTime > TWAP_PERIOD ? currentTime - TWAP_PERIOD : 0;
+        
+        // Get oldest observation timestamp
+        Oracle.Observation memory oldestObs = observations[poolId][(state.index + 1) % state.cardinality];
+        if (!oldestObs.initialized) {
+            oldestObs = observations[poolId][0];
+        }
+        
+        // If we don't have observations old enough, return 0
+        if (oldestObs.blockTimestamp > oldestAllowedTime) {
+            return 0;
+        }
+        
+        // Observe the TWAP
+        try this.observeTWAP(poolId, TWAP_PERIOD, tick, state.index, liquidity, state.cardinality) returns (
+            int24 arithmeticMeanTick
+        ) {
+            // Convert tick to sqrtPriceX96
+            return TickMath.getSqrtPriceAtTick(arithmeticMeanTick);
+        } catch {
+            // If observation fails, return 0 to fallback to spot
+            return 0;
+        }
+    }
+    
+    /// @notice Observe TWAP tick (external to allow try/catch)
+    /// @param poolId The pool ID
+    /// @param secondsAgo Seconds in the past to calculate TWAP from
+    /// @param tick Current tick
+    /// @param index Current observation index
+    /// @param liquidity Current liquidity
+    /// @param cardinality Current cardinality
+    /// @return arithmeticMeanTick The time-weighted average tick
+    function observeTWAP(
+        PoolId poolId,
+        uint32 secondsAgo,
+        int24 tick,
+        uint16 index,
+        uint128 liquidity,
+        uint16 cardinality
+    ) external view returns (int24 arithmeticMeanTick) {
+        uint32 currentTime = uint32(block.timestamp);
+        
+        // Get tick cumulative for current time
+        (int48 tickCumulativeCurrent,) = 
+            observations[poolId].observeSingle(currentTime, 0, tick, index, liquidity, cardinality);
+        
+        // Get tick cumulative for secondsAgo
+        (int48 tickCumulativePast,) = 
+            observations[poolId].observeSingle(currentTime, secondsAgo, tick, index, liquidity, cardinality);
+        
+        // Calculate arithmetic mean tick
+        arithmeticMeanTick = int24((tickCumulativeCurrent - tickCumulativePast) / int48(uint48(secondsAgo)));
     }
 
     //*********************************************************************//
     // ---------------------- internal transactions ---------------------- //
     //*********************************************************************//
+
+    /// @notice Hook called after pool initialization to set up oracle
+    /// @param key The pool key
+    /// @param tick The initial tick
+    /// @return selector The function selector
+    function _afterInitialize(address, PoolKey calldata key, uint160, int24 tick) 
+        internal 
+        override 
+        returns (bytes4) 
+    {
+        PoolId poolId = key.toId();
+        
+        // Initialize oracle with first observation
+        (uint16 cardinality, uint16 cardinalityNext) = 
+            observations[poolId].initialize(uint32(block.timestamp), tick);
+        
+        states[poolId] = ObservationState({
+            index: 0,
+            cardinality: cardinality,
+            cardinalityNext: cardinalityNext
+        });
+        
+        return BaseHook.afterInitialize.selector;
+    }
+
+    /// @notice Hook called after swap to record price observations
+    /// @param key The pool key
+    /// @return selector The function selector
+    /// @return delta The delta to return (zero in our case)
+    function _afterSwap(
+        address,
+        PoolKey calldata key,
+        SwapParams calldata,
+        BalanceDelta,
+        bytes calldata
+    ) internal override returns (bytes4, int128) {
+        PoolId poolId = key.toId();
+        
+        // Get current pool state
+        (, int24 tick,, uint128 liquidity) = poolManager.getSlot0(poolId);
+        
+        ObservationState memory state = states[poolId];
+        
+        // Write new observation
+        (uint16 indexUpdated, uint16 cardinalityUpdated) = observations[poolId].write(
+            state.index,
+            uint32(block.timestamp),
+            tick,
+            liquidity,
+            state.cardinality,
+            state.cardinalityNext
+        );
+        
+        // Update state
+        states[poolId] = ObservationState({
+            index: indexUpdated,
+            cardinality: cardinalityUpdated,
+            cardinalityNext: state.cardinalityNext
+        });
+        
+        return (BaseHook.afterSwap.selector, 0);
+    }
 
     /// @notice Check if a token is a Juicebox project token and register it
     /// @param token The token address to check

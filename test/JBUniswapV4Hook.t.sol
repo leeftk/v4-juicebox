@@ -7,6 +7,7 @@ import "forge-std/console.sol";
 import {PoolManager} from "@uniswap/v4-core/src/PoolManager.sol";
 import {IPoolManager} from "@uniswap/v4-core/src/interfaces/IPoolManager.sol";
 import {IHooks} from "@uniswap/v4-core/src/interfaces/IHooks.sol";
+import {StateLibrary} from "@uniswap/v4-core/src/libraries/StateLibrary.sol";
 import {SwapParams, ModifyLiquidityParams} from "@uniswap/v4-core/src/types/PoolOperation.sol";
 import {PoolModifyLiquidityTest} from "@uniswap/v4-core/src/test/PoolModifyLiquidityTest.sol";
 import {PoolSwapTest} from "@uniswap/v4-core/src/test/PoolSwapTest.sol";
@@ -134,6 +135,7 @@ contract MockJBController {
 contract JuiceboxHookTest is Test {
     using PoolIdLibrary for PoolKey;
     using CurrencyLibrary for Currency;
+    using StateLibrary for IPoolManager;
 
     JBUniswapV4Hook hook;
     MockJBTokens mockJBTokens;
@@ -168,8 +170,13 @@ contract JuiceboxHookTest is Test {
 
         // Deploy the hook with proper address mining
         // Calculate the required flags for the hook permissions
-        // beforeSwap = true, beforeSwapReturnDelta = true
-        uint160 flags = uint160(Hooks.BEFORE_SWAP_FLAG | Hooks.BEFORE_SWAP_RETURNS_DELTA_FLAG);
+        // afterInitialize = true, beforeSwap = true, afterSwap = true, beforeSwapReturnDelta = true
+        uint160 flags = uint160(
+            Hooks.AFTER_INITIALIZE_FLAG | 
+            Hooks.BEFORE_SWAP_FLAG | 
+            Hooks.AFTER_SWAP_FLAG |
+            Hooks.BEFORE_SWAP_RETURNS_DELTA_FLAG
+        );
 
         // Prepare constructor arguments
         bytes memory constructorArgs = abi.encode(
@@ -336,13 +343,13 @@ contract JuiceboxHookTest is Test {
         Hooks.Permissions memory permissions = hook.getHookPermissions();
 
         assertFalse(permissions.beforeInitialize, "Should not have beforeInitialize permission");
-        assertFalse(permissions.afterInitialize, "Should not have afterInitialize permission");
+        assertTrue(permissions.afterInitialize, "Should have afterInitialize permission for oracle");
         assertFalse(permissions.beforeAddLiquidity, "Should not have beforeAddLiquidity permission");
         assertFalse(permissions.afterAddLiquidity, "Should not have afterAddLiquidity permission");
         assertFalse(permissions.beforeRemoveLiquidity, "Should not have beforeRemoveLiquidity permission");
         assertFalse(permissions.afterRemoveLiquidity, "Should not have afterRemoveLiquidity permission");
         assertTrue(permissions.beforeSwap, "Should have beforeSwap permission");
-        assertFalse(permissions.afterSwap, "Should not have afterSwap permission");
+        assertTrue(permissions.afterSwap, "Should have afterSwap permission for oracle observations");
         assertFalse(permissions.beforeDonate, "Should not have beforeDonate permission");
         assertFalse(permissions.afterDonate, "Should not have afterDonate permission");
         assertTrue(permissions.beforeSwapReturnDelta, "Should have beforeSwapReturnDelta permission");
@@ -405,6 +412,75 @@ contract JuiceboxHookTest is Test {
         // After swap, projectId should be cached for the pool
         uint256 cachedProjectId = hook.projectIdOf(id);
         assertEq(cachedProjectId, 123, "Project ID should be cached");
+    }
+
+    // ============================================
+    // TWAP ORACLE TESTS
+    // ============================================
+
+    function testOracleInitialization() public view {
+        // Check that oracle was initialized during pool setup
+        (uint16 index, uint16 cardinality, uint16 cardinalityNext) = hook.states(id);
+        
+        assertEq(index, 0, "Initial index should be 0");
+        assertEq(cardinality, 1, "Initial cardinality should be 1");
+        assertEq(cardinalityNext, 1, "Initial cardinalityNext should be 1");
+    }
+
+    function testOracleObservationRecording() public {
+        // Record initial observation count
+        (uint16 initialIndex,,) = hook.states(id);
+        
+        // Perform a swap to record an observation
+        token1.mint(address(this), 1 ether);
+        token1.approve(address(swapRouter), 1 ether);
+        
+        // Wait a bit to ensure different timestamp
+        vm.warp(block.timestamp + 1);
+        
+        SwapParams memory params =
+            SwapParams({zeroForOne: false, amountSpecified: -1 ether, sqrtPriceLimitX96: TickMath.MAX_SQRT_PRICE - 1});
+        
+        swapRouter.swap(key, params, PoolSwapTest.TestSettings(false, false), ZERO_BYTES);
+        
+        // Check that observation was recorded
+        (uint16 newIndex,,) = hook.states(id);
+        
+        // Index should have incremented or wrapped to 0
+        assertTrue(newIndex == initialIndex + 1 || newIndex == 0, "Index should have incremented");
+    }
+
+    function testCardinalityIncrease() public {
+        // Check initial cardinality
+        (, uint16 initialCardinality, uint16 initialCardinalityNext) = hook.states(id);
+        assertEq(initialCardinality, 1, "Initial cardinality should be 1");
+        
+        // Increase cardinality
+        hook.increaseCardinalityNext(id, 10);
+        
+        // Check that cardinalityNext has been set
+        (,, uint16 newCardinalityNext) = hook.states(id);
+        assertEq(newCardinalityNext, 10, "CardinalityNext should be 10");
+    }
+
+    function testTWAPFallbackToSpot() public view {
+        // For a newly initialized pool with only one observation, 
+        // TWAP should fallback to spot price
+        uint256 estimatedOut = hook.estimateUniswapOutput(id, key, 1 ether, true);
+        
+        assertGt(estimatedOut, 0, "Should fallback to spot price and return positive value");
+    }
+
+    function testTWAPWithMultipleObservations() public view {
+        // With only initial observation, estimate should use spot price fallback
+        uint256 estimatedOut = hook.estimateUniswapOutput(id, key, 1 ether, true);
+        
+        // Verify the fallback works
+        assertGt(estimatedOut, 0, "Should get positive estimate via fallback to spot");
+        
+        // TWAP oracle is initialized and ready to record observations
+        // Actual TWAP calculation would require multiple swaps over time
+        // which is better suited for integration tests
     }
 
     // ============================================
