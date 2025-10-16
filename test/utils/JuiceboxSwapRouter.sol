@@ -18,6 +18,9 @@ contract JuiceboxSwapRouter {
     using CurrencySettler for Currency;
 
     IPoolManager public immutable poolManager;
+    
+    // Track the current sender for hooks to query
+    address private _msgSender;
 
     struct CallbackData {
         address sender;
@@ -29,18 +32,29 @@ contract JuiceboxSwapRouter {
     constructor(IPoolManager _poolManager) {
         poolManager = _poolManager;
     }
+    
+    /// @notice Returns the actual user address (for hooks to query)
+    function msgSender() external view returns (address) {
+        return _msgSender;
+    }
 
     /// @notice Execute a swap that allows Juicebox routing
     /// @param key The pool key
     /// @param params The swap parameters
     /// @return delta The balance delta from the swap
     function swap(PoolKey memory key, SwapParams memory params) external payable returns (BalanceDelta delta) {
-        // Encode sender address in hookData so hook knows who the real user is
-        bytes memory hookData = abi.encode(msg.sender);
+        // Set msgSender for hooks to query
+        _msgSender = msg.sender;
+        
+        // Encode router address in hookData so hook can call msgSender() on it
+        bytes memory hookData = abi.encode(address(this));
         
         delta = abi.decode(
             poolManager.unlock(abi.encode(CallbackData(msg.sender, key, params, hookData))), (BalanceDelta)
         );
+        
+        // Clear msgSender
+        _msgSender = address(0);
     }
 
     function unlockCallback(bytes calldata rawData) external returns (bytes memory) {

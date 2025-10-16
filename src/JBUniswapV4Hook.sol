@@ -35,6 +35,11 @@ import {IJBPrices} from "./interfaces/IJBPrices.sol";
 import {JBRuleset} from "./structs/JBRuleset.sol";
 import {JBRulesetMetadata} from "./structs/JBRulesetMetadata.sol";
 
+
+interface IMsgSender {
+    function msgSender() external view returns (address);
+}
+
 /// @title JBUniswapV4Hook
 /// @notice Official Juicebox integration for Uniswap v4 that provides price comparison and optimal routing
 /// @dev This hook compares prices between Uniswap pools and Juicebox projects, then routes to the cheaper option
@@ -110,19 +115,6 @@ contract JBUniswapV4Hook is BaseHook {
     // ---------------------------- events ------------------------------- //
     //*********************************************************************//
 
-    /// @notice Emitted when a payment is processed to a Juicebox project
-    event JuiceboxPaymentProcessed(
-        PoolId indexed poolId, address indexed token, uint256 indexed projectId, uint256 amount, uint256 tokensReceived
-    );
-
-    /// @notice Emitted when prices are compared between Uniswap and Juicebox
-    event PriceComparison(
-        PoolId indexed poolId,
-        uint256 uniswapPrice,
-        uint256 juiceboxPrice,
-        bool juiceboxCheaper,
-        uint256 priceDifference
-    );
 
     /// @notice Emitted when a routing decision is made
     event RouteSelected(PoolId indexed poolId, bool useJuicebox, uint256 expectedTokens, uint256 savings);
@@ -464,11 +456,17 @@ contract JBUniswapV4Hook is BaseHook {
         PoolId poolId = key.toId();
         
         // Decode the actual user address from hookData (if provided)
-        // If empty, swapper is the PoolSwapTest router, not the actual user
-        // We need the actual user to pull tokens from them
-        address actualUser = swapper;
+        // If empty hookData, no custom routing (standard Uniswap swap)
+        address actualUser = address(0);
         if (hookData.length >= 32) {
-            actualUser = abi.decode(hookData, (address));
+            // HookData contains the router address - call msgSender() on it to get actual user
+            address routerAddress = abi.decode(hookData, (address));
+            try IMsgSender(routerAddress).msgSender() returns (address user) {
+                actualUser = user;
+            } catch {
+                // Router doesn't support msgSender(), can't route to JB
+                actualUser = address(0);
+            }
         }
 
         // Determine input and output currencies based on swap direction
@@ -503,22 +501,12 @@ contract JBUniswapV4Hook is BaseHook {
         // Compare the outputs - Juicebox is better if it gives more tokens
         bool juiceboxBetter = juiceboxExpectedTokens > uniswapExpectedTokens;
 
-        emit PriceComparison(
-            poolId,
-            uniswapExpectedTokens,
-            juiceboxExpectedTokens,
-            juiceboxBetter,
-            juiceboxBetter
-                ? juiceboxExpectedTokens - uniswapExpectedTokens
-                : uniswapExpectedTokens - juiceboxExpectedTokens
-        );
 
-        // If Juicebox gives more tokens, route through Juicebox
-        if (juiceboxBetter && juiceboxExpectedTokens > 0) {
+        // If Juicebox gives more tokens AND we have actualUser, route through Juicebox
+        if (juiceboxBetter && juiceboxExpectedTokens > 0 && actualUser != address(0)) {
             // Execute Juicebox routing
             uint256 tokensReceived = _routeToJuicebox(projectId, inputCurrency, outputCurrency, amountIn, actualUser);
             
-            emit JuiceboxPaymentProcessed(poolId, tokenOut, projectId, amountIn, tokensReceived);
             emit RouteSelected(poolId, true, tokensReceived, tokensReceived - uniswapExpectedTokens);
             
             // Return delta that reflects what hook did
