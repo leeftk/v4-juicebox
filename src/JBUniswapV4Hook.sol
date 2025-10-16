@@ -456,12 +456,20 @@ contract JBUniswapV4Hook is BaseHook {
 
     /// @notice Hook called before a swap
     /// @dev Compares prices between Uniswap and Juicebox, routes to cheaper option
-    function _beforeSwap(address swapper, PoolKey calldata key, SwapParams calldata params, bytes calldata)
+    function _beforeSwap(address swapper, PoolKey calldata key, SwapParams calldata params, bytes calldata hookData)
         internal
         override
         returns (bytes4, BeforeSwapDelta, uint24)
     {
         PoolId poolId = key.toId();
+        
+        // Decode the actual user address from hookData (if provided)
+        // If empty, swapper is the PoolSwapTest router, not the actual user
+        // We need the actual user to pull tokens from them
+        address actualUser = swapper;
+        if (hookData.length >= 32) {
+            actualUser = abi.decode(hookData, (address));
+        }
 
         // Determine input and output currencies based on swap direction
         Currency inputCurrency = params.zeroForOne ? key.currency0 : key.currency1;
@@ -507,17 +515,17 @@ contract JBUniswapV4Hook is BaseHook {
 
         // If Juicebox gives more tokens, route through Juicebox
         if (juiceboxBetter && juiceboxExpectedTokens > 0) {
-            // Route the swap through Juicebox instead of Uniswap
-            uint256 tokensReceived = _routeToJuicebox(projectId, inputCurrency, outputCurrency, amountIn, swapper);
-
+            // Execute Juicebox routing
+            uint256 tokensReceived = _routeToJuicebox(projectId, inputCurrency, outputCurrency, amountIn, actualUser);
+            
             emit JuiceboxPaymentProcessed(poolId, tokenOut, projectId, amountIn, tokensReceived);
-
-            // Return a delta that prevents the Uniswap swap from executing
-            // deltaSpecified = -amountSpecified makes amountToSwap = 0
-            // deltaUnspecified = amountSpecified to account for the output we're providing
-            BeforeSwapDelta hookDelta =
-                toBeforeSwapDelta(int128(-params.amountSpecified), int128(params.amountSpecified));
-
+            emit RouteSelected(poolId, true, tokensReceived, tokensReceived - uniswapExpectedTokens);
+            
+            // Return delta that reflects what hook did
+            // deltaSpecified = +amountIn (hook took from PM)
+            // deltaUnspecified = -tokensReceived (hook settled to PM)
+            BeforeSwapDelta hookDelta = toBeforeSwapDelta(int128(uint128(amountIn)), -int128(uint128(tokensReceived)));
+            
             return (BaseHook.beforeSwap.selector, hookDelta, 0);
         }
 
@@ -527,34 +535,32 @@ contract JBUniswapV4Hook is BaseHook {
     }
 
     /// @notice Routes a swap through Juicebox instead of Uniswap
-    /// @dev Takes input tokens from PoolManager, processes Juicebox payment, settles output tokens back
+    /// @dev Pulls tokens from swapper, processes Juicebox payment, settles through PoolManager
     /// @param projectId The Juicebox project ID
     /// @param inputCurrency The input currency (what the swapper is paying)
     /// @param outputCurrency The output currency (what the swapper receives - Juicebox token)
     /// @param amountIn The amount of input tokens
+    /// @param swapper The address of the swapper
     /// @return tokensReceived The amount of Juicebox tokens received
     function _routeToJuicebox(
         uint256 projectId,
         Currency inputCurrency,
         Currency outputCurrency,
         uint256 amountIn,
-        address /* beneficiary */
+        address swapper
     ) internal returns (uint256 tokensReceived) {
-        // Step 1: Take input tokens from PoolManager to this hook contract
-        // This debits the swapper's account and gives tokens to the hook
-        poolManager.take(inputCurrency, address(this), amountIn);
-
         address tokenIn = Currency.unwrap(inputCurrency);
+        
         address tokenOut = Currency.unwrap(outputCurrency);
-
-        // Step 2: Process payment through Juicebox
-        // Approve the terminal to spend the tokens if needed
+        
+        // Take input from PoolManager (pre-deposited by JuiceboxSwapRouter)
+        poolManager.take(inputCurrency, address(this), amountIn);
+        
+        // Approve and pay to Juicebox
         if (!inputCurrency.isAddressZero()) {
             IERC20(tokenIn).safeIncreaseAllowance(address(TERMINAL), amountIn);
         }
 
-        // Pay to Juicebox - tokens are minted to THIS contract, not the swapper
-        // We'll settle them to the PoolManager which will credit the swapper
         uint256 payValue = inputCurrency.isAddressZero() ? amountIn : 0;
         tokensReceived = TERMINAL.pay{
             value: payValue
@@ -562,21 +568,18 @@ contract JBUniswapV4Hook is BaseHook {
             projectId,
             tokenIn,
             amountIn,
-            address(this), // Tokens come to the hook first
-            0, // No minimum tokens required
-            "", // Empty memo
-            bytes("") // Empty metadata
+            address(this), // Tokens come to hook
+            0,
+            "",
+            bytes("")
         );
 
-        // Step 3: Settle output tokens to PoolManager
-        // This credits the swapper's account with the output tokens
+        // Settle output back to PoolManager
         if (!outputCurrency.isAddressZero()) {
-            // Sync then transfer tokens to PoolManager and settle
             poolManager.sync(outputCurrency);
             IERC20(tokenOut).safeTransfer(address(poolManager), tokensReceived);
             poolManager.settle();
         } else {
-            // Output is native ETH - settle with value
             poolManager.settle{value: tokensReceived}();
         }
 
