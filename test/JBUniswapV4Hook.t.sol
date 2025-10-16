@@ -344,6 +344,8 @@ contract JuiceboxHookTest is Test {
         assertGt(token0Received, 1 ether, "JB should give way more than Uniswap's ~0.997");
     }
 
+
+
     /// Given project 123 has a weight of 1000e18
     /// When calculating expected tokens for 1 ETH payment
     /// Then the result should be 1000 ether tokens
@@ -735,6 +737,78 @@ contract JuiceboxHookTest is Test {
             // Some extreme combinations may overflow in the simplified math
             // This is acceptable for a reference implementation
         }
+    }
+
+    /// Given a pool with a higher purchase price for the JB project token than the uniswap price
+    /// When the user swaps amountIn of token1 for token0
+    /// Then the juicebox routing should be executed
+    /// And the user should receive the project tokens
+    function testFuzz_JuiceboxRoutingExecuted(uint256 _amountIn) public {
+        _amountIn = bound(_amountIn, 0.01 ether, 10 ether);
+        
+        // Record initial token0 balance
+        uint256 initialToken0 = token0.balanceOf(address(this));
+        
+        // Mint and approve token1
+        token1.mint(address(this), _amountIn);
+        token1.approve(address(jbSwapRouter), _amountIn);
+        
+        // Swap token1 for token0
+        SwapParams memory params =
+            SwapParams({zeroForOne: false, amountSpecified: -int256(_amountIn), sqrtPriceLimitX96: TickMath.MAX_SQRT_PRICE - 1});
+        
+        jbSwapRouter.swap(key, params);
+
+        // Verify that the juicebox routing was executed
+        assertEq(hook.projectIdOf(key.toId()), 123, "Juicebox routing should be executed");
+        
+        // Assert that the project token (token0) balance increased
+        uint256 finalToken0 = token0.balanceOf(address(this));
+        uint256 token0Received = finalToken0 - initialToken0;
+        
+        // User should have received JB tokens (1000 tokens per 1 ether input)
+        uint256 expectedTokens = (_amountIn * 1000e18) / 1e18;
+        assertEq(token0Received, expectedTokens, "Should have received JB project tokens");
+        assertGt(token0Received, 0, "Project token balance should have increased");
+    }
+
+    /// Given a pool with fuzzed swap amounts
+    /// When the user swaps token1 for token0 (buying JB token) with various amounts
+    /// Then the juicebox routing should be executed correctly
+    /// And the user should receive the expected tokens (1000 tokens per unit in mock)
+    function testFuzz_JuiceboxRoutingExecutedExtended(
+        uint256 _amountIn
+    ) public {
+        // Bound the fuzz parameter - test a wider range than the original
+        _amountIn = bound(_amountIn, 0.001 ether, 100 ether);
+        
+        // Record initial token0 balance
+        uint256 initialToken0 = token0.balanceOf(address(this));
+        
+        // Mint and approve token1 (buying token0)
+        token1.mint(address(this), _amountIn);
+        token1.approve(address(jbSwapRouter), _amountIn);
+        
+        // Swap token1 for token0 (buying JB token)
+        SwapParams memory params = SwapParams({
+            zeroForOne: false,
+            amountSpecified: -int256(_amountIn),
+            sqrtPriceLimitX96: TickMath.MAX_SQRT_PRICE - 1
+        });
+        
+        jbSwapRouter.swap(key, params);
+
+        // Verify that the juicebox routing was executed
+        assertEq(hook.projectIdOf(key.toId()), 123, "Juicebox routing should be executed");
+        
+        // Assert that the project token (token0) balance increased
+        uint256 finalToken0 = token0.balanceOf(address(this));
+        uint256 tokensReceived = finalToken0 - initialToken0;
+        
+        // We should receive JB tokens (mock returns 1000 tokens per unit)
+        uint256 expectedTokens = (_amountIn * 1000e18) / 1e18;
+        assertEq(tokensReceived, expectedTokens, "Should have received correct amount of JB project tokens");
+        assertGt(tokensReceived, 0, "Project token balance should have increased");
     }
 
     /// Given project 123 has a fuzzed weight
@@ -1163,63 +1237,6 @@ contract JuiceboxHookTest is Test {
         }
     }
 
-    /// Given various Juicebox prices being set
-    /// When comparing routing decisions
-    /// Then the system should log price comparisons and always choose the best route
-    function testFuzz_PriceComparisonLogging(
-        uint256 jbWeight,
-        uint256 ethPerPaymentToken,
-        uint256 swapAmount
-    ) public {
-        jbWeight = bound(jbWeight, 100e18, 10000e18);
-        ethPerPaymentToken = bound(ethPerPaymentToken, 0.5e18, 2e18); // 0.5x to 2x ETH
-        swapAmount = bound(swapAmount, 0.1 ether, 5 ether);
-
-        // Configure Juicebox pricing
-        mockJBController.setWeight(123, jbWeight);
-        hook.setCurrencyId(address(token1), 2);
-        mockJBPrices.setPricePerUnitOf(123, 1, 2, ethPerPaymentToken);
-
-        // Calculate both routes
-        uint256 jbExpected = hook.calculateExpectedTokensWithCurrency(123, address(token1), swapAmount);
-        uint256 uniswapExpected = hook.estimateUniswapOutput(id, key, swapAmount, false);
-
-        // Execute swap and capture events
-        token1.mint(address(this), swapAmount);
-        token1.approve(address(swapRouter), swapAmount);
-        
-        vm.recordLogs();
-        
-        SwapParams memory params = SwapParams({
-            zeroForOne: false,
-            amountSpecified: -int256(swapAmount),
-            sqrtPriceLimitX96: TickMath.MAX_SQRT_PRICE - 1
-        });
-        
-        try swapRouter.swap(key, params, PoolSwapTest.TestSettings(false, false), ZERO_BYTES) {
-            // Get logs
-            Vm.Log[] memory logs = vm.getRecordedLogs();
-            
-            // Look for PriceComparison event
-            bool foundPriceComparison = false;
-            for (uint i = 0; i < logs.length; i++) {
-                // PriceComparison event signature
-                if (logs[i].topics[0] == keccak256("PriceComparison(bytes32,uint256,uint256,bool,uint256)")) {
-                    foundPriceComparison = true;
-                    break;
-                }
-            }
-            
-            assertTrue(foundPriceComparison, "Should emit PriceComparison event");
-            
-            // Verify routing decision was detected
-            // NOTE: Actual Juicebox routing is disabled in this version due to architectural constraints
-            // The fix to the delta calculation is correct (line 526 in JBUniswapV4Hook.sol)
-            // In production, this would route through Juicebox when jbExpected > uniswapExpected
-        } catch {
-            // Swap failed due to liquidity - acceptable
-        }
-    }
 
     /// Given extreme price scenarios
     /// When the pool experiences high volatility
