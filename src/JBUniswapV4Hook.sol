@@ -23,6 +23,7 @@ import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol
 // Import Juicebox protocol interfaces
 import {IJBTokens} from "./interfaces/IJBTokens.sol";
 import {IJBToken} from "./interfaces/IJBToken.sol";
+import {IJBDirectory} from "./interfaces/IJBDirectory.sol";
 import {IJBMultiTerminal} from "./interfaces/IJBMultiTerminal.sol";
 import {IJBController} from "./interfaces/IJBController.sol";
 import {IJBPrices} from "./interfaces/IJBPrices.sol";
@@ -52,8 +53,8 @@ contract JBUniswapV4Hook is BaseHook {
     /// @notice The Juicebox tokens contract for project token lookup
     IJBTokens public immutable TOKENS;
 
-    /// @notice The Juicebox multi-terminal for processing payments
-    IJBMultiTerminal public immutable TERMINAL;
+    /// @notice The Juicebox directory for terminal lookup
+    IJBDirectory public immutable DIRECTORY;
 
     /// @notice The Juicebox controller for ruleset information
     IJBController public immutable CONTROLLER;
@@ -61,11 +62,11 @@ contract JBUniswapV4Hook is BaseHook {
     /// @notice The Juicebox prices contract for currency conversion
     IJBPrices public immutable PRICES;
 
-    /// @notice Currency ID for ETH (standard in Juicebox)
-    uint256 public constant ETH_CURRENCY_ID = 1;
-
     /// @notice Native ETH address representation
-    address public constant NATIVE_ETH = address(0);
+    address public constant UNISWAP_NATIVE_ETH = address(0);
+
+    /// @notice Juicebox native token address
+    address public constant JB_NATIVE_TOKEN = address(0x000000000000000000000000000000000000EEEe);
 
     //*********************************************************************//
     // --------------------- public stored properties -------------------- //
@@ -73,9 +74,6 @@ contract JBUniswapV4Hook is BaseHook {
 
     /// @notice Mapping from Uniswap pool ID to Juicebox project ID
     mapping(PoolId => uint256) public projectIdOf;
-
-    /// @notice Mapping from token address to Juicebox currency ID
-    mapping(address => uint256) public currencyIdOf;
 
     //*********************************************************************//
     // ---------------------------- events ------------------------------- //
@@ -104,40 +102,24 @@ contract JBUniswapV4Hook is BaseHook {
 
     /// @param poolManager The Uniswap v4 pool manager
     /// @param tokens The Juicebox tokens contract
-    /// @param terminal The Juicebox multi-terminal
+    /// @param directory The Juicebox directory
     /// @param controller The Juicebox controller
     /// @param prices The Juicebox prices contract for currency conversion
     constructor(
         IPoolManager poolManager,
         IJBTokens tokens,
-        IJBMultiTerminal terminal,
+        IJBDirectory directory,
         IJBController controller,
         IJBPrices prices
     ) BaseHook(poolManager) {
         TOKENS = tokens;
-        TERMINAL = terminal;
+        DIRECTORY = directory;
         CONTROLLER = controller;
         PRICES = prices;
-
-        // Set ETH currency ID
-        currencyIdOf[NATIVE_ETH] = ETH_CURRENCY_ID;
     }
 
     /// @notice Receive function to accept ETH
     receive() external payable {}
-
-    //*********************************************************************//
-    // ---------------------- external transactions ---------------------- //
-    //*********************************************************************//
-
-    /// @notice Set the Juicebox currency ID for a token
-    /// @dev This is needed to enable price conversions for non-ETH tokens
-    /// @param token The token address
-    /// @param currencyId The Juicebox currency ID for this token
-    function setCurrencyId(address token, uint256 currencyId) external {
-        if (currencyId == 0) revert JBUniswapV4Hook_InvalidCurrencyId();
-        currencyIdOf[token] = currencyId;
-    }
 
     //*********************************************************************//
     // ------------------------- public views ---------------------------- //
@@ -164,23 +146,6 @@ contract JBUniswapV4Hook is BaseHook {
         });
     }
 
-    /// @notice Calculate expected tokens for a given payment amount in ETH
-    /// @param projectId The Juicebox project ID
-    /// @param ethAmount The amount of ETH being paid
-    /// @return expectedTokens The expected number of tokens to be received
-    function calculateExpectedTokens(uint256 projectId, uint256 ethAmount)
-        external
-        view
-        returns (uint256 expectedTokens)
-    {
-        try CONTROLLER.currentRulesetOf(projectId) returns (JBRuleset memory ruleset, JBRulesetMetadata memory) {
-            // Weight represents tokens issued per ETH paid
-            expectedTokens = (ruleset.weight * ethAmount) / 1e18;
-        } catch {
-            expectedTokens = 0;
-        }
-    }
-
     /// @notice Calculate expected tokens for a given payment amount in any currency
     /// @param projectId The Juicebox project ID
     /// @param paymentToken The token being used for payment
@@ -192,24 +157,21 @@ contract JBUniswapV4Hook is BaseHook {
         returns (uint256 expectedTokens)
     {
         // Get the project's weight (tokens per ETH)
-        uint256 tokensPerETH;
-        try CONTROLLER.currentRulesetOf(projectId) returns (JBRuleset memory ruleset, JBRulesetMetadata memory) {
-            tokensPerETH = ruleset.weight;
+        uint256 tokensPerBaseCurrency;
+        // Get the currency Id for the `weight`. 
+        uint256 baseCurrency;
+        try CONTROLLER.currentRulesetOf(projectId) returns (JBRuleset memory ruleset, JBRulesetMetadata memory metadata) {
+            tokensPerBaseCurrency = ruleset.weight;
+            baseCurrency = metadata.baseCurrency;
         } catch {
             return 0;
         }
 
-        // If payment is in ETH, calculate directly
-        if (paymentToken == NATIVE_ETH) {
-            return (tokensPerETH * paymentAmount) / 1e18;
-        }
+        // Use Juicebox's address for native token if the payment token is uniswap's native token.
+        if (paymentToken == UNISWAP_NATIVE_ETH) paymentToken = JB_NATIVE_TOKEN;
 
         // Get the currency ID for the payment token
-        uint256 paymentCurrencyId = currencyIdOf[paymentToken];
-        if (paymentCurrencyId == 0) {
-            // No currency ID registered, cannot convert
-            return 0;
-        }
+        uint32 paymentCurrencyId = uint32(uint160(paymentToken));
 
         // Get the decimals of the payment token
         uint8 paymentTokenDecimals;
@@ -223,37 +185,16 @@ contract JBUniswapV4Hook is BaseHook {
         // Get the price: how much ETH per 1 unit of payment token
         // pricePerUnitOf returns the price of unitCurrency (paymentToken) in terms of pricingCurrency (ETH)
         // The result is scaled by 10^decimals (18 in this case)
-        uint256 ethPerPaymentToken;
-        try PRICES.pricePerUnitOf(projectId, ETH_CURRENCY_ID, paymentCurrencyId, 18) returns (uint256 price) {
-            ethPerPaymentToken = price;
+        uint256 baseCurrencyPerPaymentToken;
+        try PRICES.pricePerUnitOf(projectId, paymentCurrencyId, baseCurrency, 18) returns (uint256 price) {
+            baseCurrencyPerPaymentToken = price;
         } catch {
-            // Try using default price feeds (projectId = 0)
-            try PRICES.pricePerUnitOf(
-                PRICES.DEFAULT_PROJECT_ID(), ETH_CURRENCY_ID, paymentCurrencyId, 18
-            ) returns (uint256 price) {
-                ethPerPaymentToken = price;
-            } catch {
-                return 0;
-            }
-        }
-
-        // Convert payment amount to ETH equivalent
-        // paymentAmount is in native token decimals, price is per 1 whole token with 18 decimal precision
-        // First normalize paymentAmount to 18 decimals, then multiply by price
-        uint256 ethEquivalent;
-        if (paymentTokenDecimals <= 18) {
-            // Scale up to 18 decimals if needed
-            uint256 normalizedAmount = paymentAmount * (10 ** (18 - paymentTokenDecimals));
-            ethEquivalent = (normalizedAmount * ethPerPaymentToken) / 1e18;
-        } else {
-            // Scale down from higher decimals (edge case, but handle it)
-            uint256 normalizedAmount = paymentAmount / (10 ** (paymentTokenDecimals - 18));
-            ethEquivalent = (normalizedAmount * ethPerPaymentToken) / 1e18;
+            return 0;
         }
 
         // Calculate tokens based on ETH equivalent
-        // tokensPerETH and ethEquivalent are both in 18 decimals
-        expectedTokens = (tokensPerETH * ethEquivalent) / 1e18;
+        // baseCurrencyPerPaymentToken is in 18 decimals, and paymentAmount is in the payment token's decimals. We want 18.
+        expectedTokens = (baseCurrencyPerPaymentToken * paymentAmount) / paymentTokenDecimals;
     }
 
     /// @notice Estimate expected output tokens from a Uniswap swap
@@ -430,16 +371,20 @@ contract JBUniswapV4Hook is BaseHook {
         address tokenIn = Currency.unwrap(inputCurrency);
         address tokenOut = Currency.unwrap(outputCurrency);
 
+        // Get the primary terminal for the project.
+        address terminal = DIRECTORY.primaryTerminalOf(projectId, tokenIn);
+
         // Step 2: Process payment through Juicebox
         // Approve the terminal to spend the tokens if needed
         if (!inputCurrency.isAddressZero()) {
-            IERC20(tokenIn).safeIncreaseAllowance(address(TERMINAL), amountIn);
+            IERC20(tokenIn).safeIncreaseAllowance(address(terminal), amountIn);
         }
 
         // Pay to Juicebox - tokens are minted to THIS contract, not the swapper
         // We'll settle them to the PoolManager which will credit the swapper
         uint256 payValue = inputCurrency.isAddressZero() ? amountIn : 0;
-        tokensReceived = TERMINAL.pay{
+
+        tokensReceived = IJBMultiTerminal(terminal).pay{
             value: payValue
         }(
             projectId,
