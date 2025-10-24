@@ -22,7 +22,7 @@ import {MockERC20} from "./mock/MockERC20.sol";
 import {JuiceboxSwapRouter} from "./utils/JuiceboxSwapRouter.sol";
 
 // Import Juicebox interfaces and structs from the hook file
-import {IJBTokens, IJBMultiTerminal, IJBController, IJBPrices} from "../src/JBUniswapV4Hook.sol";
+import {IJBTokens, IJBMultiTerminal, IJBController, IJBPrices, IJBDirectory, IJBTerminalStore} from "../src/JBUniswapV4Hook.sol";
 import {JBRuleset} from "../src/structs/JBRuleset.sol";
 import {JBRulesetMetadata} from "../src/structs/JBRulesetMetadata.sol";
 import {HookMiner} from "@uniswap/v4-periphery/src/utils/HookMiner.sol";
@@ -33,6 +33,18 @@ contract MockJBTokens {
 
     function setProjectId(address token, uint256 projectId) external {
         projectIdOf[token] = projectId;
+    }
+}
+
+contract MockJBDirectory {
+    address public mockTerminal;
+
+    function setMockTerminal(address terminal) external {
+        mockTerminal = terminal;
+    }
+
+    function primaryTerminalOf(uint256, /* projectId */ address /* token */ ) external view returns (address) {
+        return mockTerminal;
     }
 }
 
@@ -81,8 +93,15 @@ contract MockJBMultiTerminal {
     // Map projectId to the project token address
     mapping(uint256 => address) public projectTokens;
     
+    // Reference to terminal store for surplus calculations
+    MockJBTerminalStore public TERMINAL_STORE;
+    
     function setProjectToken(uint256 projectId, address projectToken) external {
         projectTokens[projectId] = projectToken;
+    }
+    
+    function setTerminalStore(address terminalStore) external {
+        TERMINAL_STORE = MockJBTerminalStore(terminalStore);
     }
 
     function pay(
@@ -109,6 +128,34 @@ contract MockJBMultiTerminal {
         }
         
         return beneficiaryTokenCount;
+    }
+
+    function redeemTokensOf(
+        uint256, /* projectId */
+        address token,
+        uint256 amount,
+        address beneficiary,
+        uint256, /* minReturnedTokens */
+        string calldata, /* memo */
+        bytes calldata /* metadata */
+    ) external returns (uint256) {
+        // Mock redemption: return the surplus amount per token
+        // This simulates redeeming JB tokens for their surplus value
+        // For testing, we'll mint the output tokens to the beneficiary
+        // In a real implementation, this would come from the terminal's surplus
+        
+        // Get the surplus amount for this project and token
+        uint256 surplusAmount = TERMINAL_STORE.currentReclaimableSurplusOf(123, token, 1, 18);
+        
+        // Calculate the output amount based on surplus
+        uint256 outputAmount = (surplusAmount * amount) / 1e18;
+        
+        // Mint the output tokens to the beneficiary (simulating redemption proceeds)
+        if (outputAmount > 0) {
+            MockERC20(token).mint(beneficiary, outputAmount);
+        }
+        
+        return outputAmount;
     }
 }
 
@@ -160,6 +207,24 @@ contract MockJBController {
     }
 }
 
+contract MockJBTerminalStore {
+    // Mapping: projectId => token => surplus
+    mapping(uint256 => mapping(address => uint256)) public surplus;
+    
+    function setSurplus(uint256 projectId, address token, uint256 surplusAmount) external {
+        surplus[projectId][token] = surplusAmount;
+    }
+
+    function currentReclaimableSurplusOf(
+        uint256 projectId,
+        address token,
+        uint256, /* currency */
+        uint256 /* decimals */
+    ) external view returns (uint256) {
+        return surplus[projectId][token];
+    }
+}
+
 contract JuiceboxHookTest is Test {
     using PoolIdLibrary for PoolKey;
     using CurrencyLibrary for Currency;
@@ -167,9 +232,11 @@ contract JuiceboxHookTest is Test {
 
     JBUniswapV4Hook hook;
     MockJBTokens mockJBTokens;
+    MockJBDirectory mockJBDirectory;
     MockJBMultiTerminal mockJBMultiTerminal;
     MockJBController mockJBController;
     MockJBPrices mockJBPrices;
+    MockJBTerminalStore mockJBTerminalStore;
 
     PoolManager manager;
     PoolSwapTest swapRouter;
@@ -194,9 +261,17 @@ contract JuiceboxHookTest is Test {
 
         // Deploy mock Juicebox contracts
         mockJBTokens = new MockJBTokens();
+        mockJBDirectory = new MockJBDirectory();
         mockJBMultiTerminal = new MockJBMultiTerminal();
         mockJBController = new MockJBController();
         mockJBPrices = new MockJBPrices();
+        mockJBTerminalStore = new MockJBTerminalStore();
+        
+        // Set up the directory to point to the terminal
+        mockJBDirectory.setMockTerminal(address(mockJBMultiTerminal));
+        
+        // Set up the terminal store reference in the terminal
+        mockJBMultiTerminal.setTerminalStore(address(mockJBTerminalStore));
 
         // Deploy the hook with proper address mining
         // Calculate the required flags for the hook permissions
@@ -210,9 +285,10 @@ contract JuiceboxHookTest is Test {
         bytes memory constructorArgs = abi.encode(
             IPoolManager(address(manager)),
             IJBTokens(address(mockJBTokens)),
-            IJBMultiTerminal(address(mockJBMultiTerminal)),
+            IJBDirectory(address(mockJBDirectory)),
             IJBController(address(mockJBController)),
-            IJBPrices(address(mockJBPrices))
+            IJBPrices(address(mockJBPrices)),
+            IJBTerminalStore(address(mockJBTerminalStore))
         );
 
         // Find a valid hook address using HookMiner
@@ -230,9 +306,10 @@ contract JuiceboxHookTest is Test {
         }(
             IPoolManager(address(manager)),
             IJBTokens(address(mockJBTokens)),
-            IJBMultiTerminal(address(mockJBMultiTerminal)),
+            IJBDirectory(address(mockJBDirectory)),
             IJBController(address(mockJBController)),
-            IJBPrices(address(mockJBPrices))
+            IJBPrices(address(mockJBPrices)),
+            IJBTerminalStore(address(mockJBTerminalStore))
         );
 
         // Deploy test tokens
@@ -249,11 +326,11 @@ contract JuiceboxHookTest is Test {
         mockJBController.setWeight(123, 1000e18); // 1000 tokens per ETH
         mockJBMultiTerminal.setProjectToken(123, address(token0)); // Link project to token
         
-        // Set up currency ID for token1 so Juicebox routing can work
-        // Currency ID 1 is ETH, so we'll use 2 for token1
-        hook.setCurrencyId(address(token1), 2);
         // Set a 1:1 ETH price for token1 (1 token1 = 1 ETH)
-        mockJBPrices.setPricePerUnitOf(123, 1, 2, 1e18);
+        // Currency ID is derived from token address: uint32(uint160(address))
+        uint32 token1CurrencyId = uint32(uint160(address(token1)));
+        uint256 baseCurrency = 1; // ETH
+        mockJBPrices.setPricePerUnitOf(123, token1CurrencyId, baseCurrency, 1e18);
 
         // Set up pool
         key = PoolKey({
@@ -365,10 +442,8 @@ contract JuiceboxHookTest is Test {
     /// When calculating expected tokens for project 123 with 1 ether of token1
     /// Then the calculation should return a positive number of tokens
     function testCalculateExpectedTokensWithCurrency() public {
-        // Set token1 as ETH with proper currency ID
-        hook.setCurrencyId(address(token1), 1); // ETH currency ID
-        
         // Test calculation with token1 as payment currency
+        // The price is already set up in setUp() via mockJBPrices
         uint256 expectedTokens = hook.calculateExpectedTokensWithCurrency(123, address(token1), 1 ether);
         
         // With 1:1 price (which is the default without price feed), we expect similar output
@@ -503,27 +578,7 @@ contract JuiceboxHookTest is Test {
         assertLt(estimatedOut, amountIn, "Output should account for fees and be less than 1:1");
     }
 
-    /// Given a test token at address 0x1234
-    /// When setting the currency ID to 2
-    /// Then the currency ID should be stored as 2
-    function testSetCurrencyId() public {
-        address testToken = address(0x1234);
-        uint256 currencyId = 2;
-        
-        hook.setCurrencyId(testToken, currencyId);
-        
-        assertEq(hook.currencyIdOf(testToken), currencyId, "Currency ID should be set");
-    }
-
-    /// Given a test token at address 0x1234
-    /// When attempting to set the currency ID to 0
-    /// Then the transaction should revert
-    function testSetCurrencyIdRevertZero() public {
-        address testToken = address(0x1234);
-        
-        vm.expectRevert();
-        hook.setCurrencyId(testToken, 0);
-    }
+    // Removed testSetCurrencyId and testSetCurrencyIdRevertZero - currency IDs are now derived from token addresses
 
     /// Given token1 has been minted to the test user
     /// And token1 has been approved for the swap router
@@ -852,15 +907,7 @@ contract JuiceboxHookTest is Test {
     /// And a positive currency ID less than type(uint128).max
     /// When setting the currency ID for the token
     /// Then the currency ID should be stored correctly
-    function testFuzz_SetCurrencyId(address token, uint256 currencyId) public {
-        vm.assume(currencyId > 0);
-        vm.assume(currencyId < type(uint128).max);
-        vm.assume(token != address(0));
-
-        hook.setCurrencyId(token, currencyId);
-        
-        assertEq(hook.currencyIdOf(token), currencyId, "Currency ID should be set correctly");
-    }
+    // Removed testFuzz_SetCurrencyId - currency IDs are now derived from token addresses
 
     /// Given a new token with a fuzzed project ID
     /// And the project is configured with a weight
@@ -1018,13 +1065,12 @@ contract JuiceboxHookTest is Test {
         // Set Juicebox weight
         mockJBController.setWeight(123, jbWeight);
 
-        // Set currency ID for token1
-        hook.setCurrencyId(address(token1), 2); // Non-ETH currency
-
         // Set price for token1 in Juicebox pricing (how much ETH per token1)
         // Varying this will affect the routing decision
         uint256 ethPerToken1 = 1e18; // 1:1 by default
-        mockJBPrices.setPricePerUnitOf(123, 1, 2, ethPerToken1);
+        uint32 token1CurrencyId = uint32(uint160(address(token1)));
+        uint256 baseCurrency = 1; // ETH
+        mockJBPrices.setPricePerUnitOf(123, token1CurrencyId, baseCurrency, ethPerToken1);
 
         // Calculate expected tokens from both routes
         uint256 jbExpectedTokens = hook.calculateExpectedTokensWithCurrency(123, address(token1), swapAmount);
@@ -1278,5 +1324,282 @@ contract JuiceboxHookTest is Test {
             // Swap may fail due to slippage - this is expected for extreme amounts
             // The important thing is the system doesn't break
         }
+    }
+
+    // ============================================
+    // JB TOKEN SELLING TESTS
+    // ============================================
+
+    /// Given the user has JB project tokens (token0)
+    /// And the user wants to sell 1 ether of token0 for token1
+    /// When the user swaps token0 for token1
+    /// Then the hook should compare JB vs Uniswap prices
+    /// And route to the better option
+    function testSellingJBToken() public {
+        // Set up surplus for selling JB tokens
+        // This represents the value that can be reclaimed per token
+        mockJBTerminalStore.setSurplus(123, address(token1), 1.5 ether); // 1.5 ETH per token (better than Uniswap)
+        
+        // Record initial balances
+        uint256 initialToken0 = token0.balanceOf(address(this));
+        uint256 initialToken1 = token1.balanceOf(address(this));
+        
+        // Ensure we have some token0 to sell
+        assertGt(initialToken0, 1 ether, "Should have token0 to sell");
+        
+        // Approve token0 for swap using JB swap router
+        token0.approve(address(jbSwapRouter), 1 ether);
+        
+        // Swap token0 for token1 (selling JB token) using JB swap router
+        SwapParams memory params = SwapParams({
+            zeroForOne: true,
+            amountSpecified: -1 ether,
+            sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1
+        });
+        
+        jbSwapRouter.swap(key, params);
+        
+        // Check final balances
+        uint256 finalToken0 = token0.balanceOf(address(this));
+        uint256 finalToken1 = token1.balanceOf(address(this));
+        
+        // User should have spent 1 ether of token0
+        assertEq(initialToken0 - finalToken0, 1 ether, "Should have spent 1 ether of token0");
+        
+        // User should have received token1 (either from JB or Uniswap)
+        uint256 token1Received = finalToken1 - initialToken1;
+        assertGt(token1Received, 0, "Should have received token1");
+    }
+
+    /// Given the user has JB project tokens (token0)
+    /// And the user wants to sell various amounts of token0 for token1
+    /// When the user swaps different amounts of token0 for token1
+    /// Then the hook should compare prices and route appropriately
+    function testFuzz_SellingJBToken(uint256 sellAmount) public {
+        sellAmount = bound(sellAmount, 0.01 ether, 5 ether);
+        
+        // Set up surplus for selling JB tokens
+        mockJBTerminalStore.setSurplus(123, address(token1), 0.5 ether);
+        
+        // Record initial token1 balance
+        uint256 initialToken1 = token1.balanceOf(address(this));
+        
+        // Approve token0 for swap
+        token0.approve(address(jbSwapRouter), sellAmount);
+        
+        // Swap token0 for token1 (selling JB token)
+        SwapParams memory params = SwapParams({
+            zeroForOne: true,
+            amountSpecified: -int256(sellAmount),
+            sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1
+        });
+        
+        try jbSwapRouter.swap(key, params) {
+            // User should have received token1
+            uint256 finalToken1 = token1.balanceOf(address(this));
+            uint256 token1Received = finalToken1 - initialToken1;
+            assertGt(token1Received, 0, "Should have received token1");
+        } catch {
+            // Swap may fail due to liquidity constraints - this is acceptable
+        }
+    }
+
+    /// Given the user has JB project tokens (token0)
+    /// And the JB surplus is higher than Uniswap price
+    /// When the user swaps token0 for token1
+    /// Then the hook should route through Juicebox
+    /// And the user should receive more token1 than from Uniswap
+    function testSellingJBTokenWhenJBBetter() public {
+        // Set up high surplus for JB (better than Uniswap)
+        mockJBTerminalStore.setSurplus(123, address(token1), 1.5 ether); // 1.5 ETH per token
+        
+        // Record initial balances
+        uint256 initialToken0 = token0.balanceOf(address(this));
+        uint256 initialToken1 = token1.balanceOf(address(this));
+        
+        // Approve token0 for swap
+        token0.approve(address(jbSwapRouter), 1 ether);
+        
+        // Swap token0 for token1 (selling JB token)
+        SwapParams memory params = SwapParams({
+            zeroForOne: true,
+            amountSpecified: -1 ether,
+            sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1
+        });
+        
+        jbSwapRouter.swap(key, params);
+        
+        // Check final balances
+        uint256 finalToken0 = token0.balanceOf(address(this));
+        uint256 finalToken1 = token1.balanceOf(address(this));
+        
+        // User should have spent 1 ether of token0
+        assertEq(initialToken0 - finalToken0, 1 ether, "Should have spent 1 ether of token0");
+        
+        // User should have received token1 from JB (should be more than Uniswap)
+        uint256 token1Received = finalToken1 - initialToken1;
+        assertGt(token1Received, 0, "Should have received token1 from JB");
+        
+        // Should receive more than typical Uniswap output due to high JB surplus
+        assertGt(token1Received, 0.5 ether, "Should receive more than 0.5 ETH from JB");
+    }
+
+    /// Given the user has JB project tokens (token0)
+    /// And the JB surplus is lower than Uniswap price
+    /// When the user swaps token0 for token1
+    /// Then the hook should route through Uniswap
+    /// And the user should receive token1 from Uniswap
+    function testSellingJBTokenWhenUniswapBetter() public {
+        // Set up low surplus for JB (worse than Uniswap)
+        mockJBTerminalStore.setSurplus(123, address(token1), 0.1 ether); // 0.1 ETH per token
+        
+        // Record initial balances
+        uint256 initialToken0 = token0.balanceOf(address(this));
+        uint256 initialToken1 = token1.balanceOf(address(this));
+        
+        // Approve token0 for swap
+        token0.approve(address(jbSwapRouter), 1 ether);
+        
+        // Swap token0 for token1 (selling JB token)
+        SwapParams memory params = SwapParams({
+            zeroForOne: true,
+            amountSpecified: -1 ether,
+            sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1
+        });
+        
+        jbSwapRouter.swap(key, params);
+        
+        // Check final balances
+        uint256 finalToken0 = token0.balanceOf(address(this));
+        uint256 finalToken1 = token1.balanceOf(address(this));
+        
+        // User should have spent some token0 (amount limited by pool liquidity and price limits)
+        uint256 token0Spent = initialToken0 - finalToken0;
+        assertGt(token0Spent, 0, "Should have spent some token0");
+        assertLt(token0Spent, 1 ether, "Should have spent less than requested due to liquidity/price limits");
+        
+        // User should have received token1 from Uniswap (better than JB)
+        uint256 token1Received = finalToken1 - initialToken1;
+        assertGt(token1Received, 0, "Should have received token1 from Uniswap");
+    }
+
+    /// Given the user has JB project tokens (token0)
+    /// And the user wants to sell token0 for token1
+    /// When the user swaps token0 for token1
+    /// Then the hook should detect that we are selling JB tokens
+    /// And compare JB vs Uniswap prices appropriately
+    function testHookDetectsSellingVsBuying() public {
+        // Set up surplus for selling (high enough to route through Juicebox)
+        mockJBTerminalStore.setSurplus(123, address(token1), 1.5 ether);
+        
+        // Approve max for both tokens upfront
+        token0.approve(address(jbSwapRouter), type(uint256).max);
+        token1.approve(address(jbSwapRouter), type(uint256).max);
+        
+        // First, test buying JB tokens (token1 -> token0)
+        // This should potentially route through Juicebox
+        token1.mint(address(this), 10 ether); // Mint extra to handle deltas
+        
+        SwapParams memory buyParams = SwapParams({
+            zeroForOne: false,
+            amountSpecified: -1 ether,
+            sqrtPriceLimitX96: TickMath.MAX_SQRT_PRICE - 1
+        });
+        
+        jbSwapRouter.swap(key, buyParams);
+        
+        // Verify Juicebox was called for buying
+        assertEq(mockJBMultiTerminal.lastProjectId(), 123, "Should have called Juicebox for buying");
+        assertEq(mockJBMultiTerminal.lastAmount(), 1 ether, "Should have paid 1 ether to Juicebox");
+        
+        // Now test selling JB tokens (token0 -> token1)
+        // This should compare JB vs Uniswap and route to the better option
+        // Sell a smaller amount to avoid liquidity issues
+        uint256 sellAmount = 0.5 ether; // Sell 0.5 ether of JB tokens
+        
+        SwapParams memory sellParams = SwapParams({
+            zeroForOne: true,
+            amountSpecified: -int256(sellAmount),
+            sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1
+        });
+        
+        jbSwapRouter.swap(key, sellParams);
+        
+        // The hook should have detected selling and compared prices
+        // The routing decision depends on which gives better output
+    }
+
+    /// Given the user has JB project tokens (token0)
+    /// And the user wants to sell token0 for token1 with various amounts
+    /// When the user swaps token0 for token1 with different surplus values
+    /// Then the hook should consistently route to the better option
+    function testFuzz_SellingJBTokenWithDifferentSurplus(uint256 sellAmount, uint256 surplusAmount) public {
+        sellAmount = bound(sellAmount, 0.01 ether, 2 ether);
+        surplusAmount = bound(surplusAmount, 0.01 ether, 2 ether);
+        
+        // Set up surplus for selling JB tokens
+        mockJBTerminalStore.setSurplus(123, address(token1), surplusAmount);
+        
+        // Record initial token1 balance
+        uint256 initialToken1 = token1.balanceOf(address(this));
+        
+        // Approve token0 for swap
+        token0.approve(address(jbSwapRouter), sellAmount);
+        
+        // Swap token0 for token1 (selling JB token)
+        SwapParams memory params = SwapParams({
+            zeroForOne: true,
+            amountSpecified: -int256(sellAmount),
+            sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1
+        });
+        
+        try jbSwapRouter.swap(key, params) {
+            // User should have received token1
+            uint256 finalToken1 = token1.balanceOf(address(this));
+            uint256 token1Received = finalToken1 - initialToken1;
+            assertGt(token1Received, 0, "Should have received token1");
+        } catch {
+            // Swap may fail due to liquidity constraints - this is acceptable
+        }
+    }
+
+    /// Given the user has JB project tokens (token0)
+    /// And the user wants to sell token0 for token1
+    /// When the user swaps token0 for token1
+    /// Then the hook should calculate expected output from selling
+    /// And compare it with Uniswap output
+    function testCalculateExpectedOutputFromSelling() public {
+        // Set up surplus for selling
+        mockJBTerminalStore.setSurplus(123, address(token1), 0.5 ether);
+        
+        // Calculate expected output from selling 1 ether of JB tokens
+        uint256 expectedOutput = hook.calculateExpectedOutputFromSelling(123, 1 ether, address(token1));
+        
+        // Should return positive value
+        assertGt(expectedOutput, 0, "Should calculate positive expected output");
+        
+        // Should be based on surplus (0.5 ether per token)
+        assertEq(expectedOutput, 0.5 ether, "Should match surplus per token");
+    }
+
+    /// Given the user has JB project tokens (token0)
+    /// And the user wants to sell token0 for token1
+    /// When the user swaps token0 for token1 with various surplus values
+    /// Then the hook should calculate expected output correctly
+    function testFuzz_CalculateExpectedOutputFromSelling(uint256 tokenAmount, uint256 surplusAmount) public {
+        tokenAmount = bound(tokenAmount, 0.01 ether, 10 ether);
+        surplusAmount = bound(surplusAmount, 0.01 ether, 5 ether);
+        
+        // Set up surplus for selling
+        mockJBTerminalStore.setSurplus(123, address(token1), surplusAmount);
+        
+        // Calculate expected output
+        uint256 expectedOutput = hook.calculateExpectedOutputFromSelling(123, tokenAmount, address(token1));
+        
+        // Should return positive value
+        assertGt(expectedOutput, 0, "Should calculate positive expected output");
+        
+        // Should scale with token amount
+        assertEq(expectedOutput, (surplusAmount * tokenAmount) / 1e18, "Should scale with token amount");
     }
 }

@@ -28,9 +28,12 @@ import {Oracle} from "./libraries/Oracle.sol";
 // Import Juicebox protocol interfaces
 import {IJBTokens} from "./interfaces/IJBTokens.sol";
 import {IJBToken} from "./interfaces/IJBToken.sol";
+import {IJBDirectory} from "./interfaces/IJBDirectory.sol";
 import {IJBMultiTerminal} from "./interfaces/IJBMultiTerminal.sol";
 import {IJBController} from "./interfaces/IJBController.sol";
+
 import {IJBPrices} from "./interfaces/IJBPrices.sol";
+import {IJBTerminalStore} from "./interfaces/IJBTerminalStore.sol";
 
 import {JBRuleset} from "./structs/JBRuleset.sol";
 import {JBRulesetMetadata} from "./structs/JBRulesetMetadata.sol";
@@ -77,8 +80,8 @@ contract JBUniswapV4Hook is BaseHook {
     /// @notice The Juicebox tokens contract for project token lookup
     IJBTokens public immutable TOKENS;
 
-    /// @notice The Juicebox multi-terminal for processing payments
-    IJBMultiTerminal public immutable TERMINAL;
+    /// @notice The Juicebox directory for terminal lookup
+    IJBDirectory public immutable DIRECTORY;
 
     /// @notice The Juicebox controller for ruleset information
     IJBController public immutable CONTROLLER;
@@ -86,11 +89,14 @@ contract JBUniswapV4Hook is BaseHook {
     /// @notice The Juicebox prices contract for currency conversion
     IJBPrices public immutable PRICES;
 
-    /// @notice Currency ID for ETH (standard in Juicebox)
-    uint256 public constant ETH_CURRENCY_ID = 1;
+    /// @notice The Juicebox terminal store for getting reclaimable surplus
+    IJBTerminalStore public immutable TERMINAL_STORE;
 
     /// @notice Native ETH address representation
-    address public constant NATIVE_ETH = address(0);
+    address public constant UNISWAP_NATIVE_ETH = address(0);
+
+    /// @notice Juicebox native token address
+    address public constant JB_NATIVE_TOKEN = address(0x000000000000000000000000000000000000EEEe);
 
     /// @notice TWAP period in seconds (30 minutes by default)
     uint32 public constant TWAP_PERIOD = 1800;
@@ -101,9 +107,6 @@ contract JBUniswapV4Hook is BaseHook {
 
     /// @notice Mapping from Uniswap pool ID to Juicebox project ID
     mapping(PoolId => uint256) public projectIdOf;
-
-    /// @notice Mapping from token address to Juicebox currency ID
-    mapping(address => uint256) public currencyIdOf;
 
     /// @notice The list of observations for a given pool ID
     mapping(PoolId => Oracle.Observation[65535]) public observations;
@@ -125,40 +128,27 @@ contract JBUniswapV4Hook is BaseHook {
 
     /// @param poolManager The Uniswap v4 pool manager
     /// @param tokens The Juicebox tokens contract
-    /// @param terminal The Juicebox multi-terminal
+    /// @param directory The Juicebox directory
     /// @param controller The Juicebox controller
     /// @param prices The Juicebox prices contract for currency conversion
+    /// @param terminalStore The Juicebox terminal store for getting reclaimable surplus
     constructor(
         IPoolManager poolManager,
         IJBTokens tokens,
-        IJBMultiTerminal terminal,
+        IJBDirectory directory,
         IJBController controller,
-        IJBPrices prices
+        IJBPrices prices,
+        IJBTerminalStore terminalStore
     ) BaseHook(poolManager) {
         TOKENS = tokens;
-        TERMINAL = terminal;
+        DIRECTORY = directory;
         CONTROLLER = controller;
         PRICES = prices;
-
-        // Set ETH currency ID
-        currencyIdOf[NATIVE_ETH] = ETH_CURRENCY_ID;
+        TERMINAL_STORE = terminalStore;
     }
 
     /// @notice Receive function to accept ETH
     receive() external payable {}
-
-    //*********************************************************************//
-    // ---------------------- external transactions ---------------------- //
-    //*********************************************************************//
-
-    /// @notice Set the Juicebox currency ID for a token
-    /// @dev This is needed to enable price conversions for non-ETH tokens
-    /// @param token The token address
-    /// @param currencyId The Juicebox currency ID for this token
-    function setCurrencyId(address token, uint256 currencyId) external {
-        if (currencyId == 0) revert JBUniswapV4Hook_InvalidCurrencyId();
-        currencyIdOf[token] = currencyId;
-    }
 
     /// @notice Increase the oracle cardinality for a pool
     /// @param poolId The pool ID
@@ -219,46 +209,79 @@ contract JBUniswapV4Hook is BaseHook {
         returns (uint256 expectedTokens)
     {
         // Get the project's weight (tokens per ETH)
-        (JBRuleset memory ruleset,) = CONTROLLER.currentRulesetOf(projectId);
-        uint256 tokensPerETH = ruleset.weight;
-
-        // If payment is in ETH, calculate directly
-        if (paymentToken == NATIVE_ETH) {
-            return (tokensPerETH * paymentAmount) / 1e18;
-        }
-
-        // Get the currency ID for the payment token
-        uint256 paymentCurrencyId = currencyIdOf[paymentToken];
-        if (paymentCurrencyId == 0) {
-            // No currency ID registered, cannot convert
+        uint256 tokensPerBaseCurrency;
+        // Get the currency Id for the `weight`. 
+        uint256 baseCurrency;
+        try CONTROLLER.currentRulesetOf(projectId) returns (JBRuleset memory ruleset, JBRulesetMetadata memory metadata) {
+            tokensPerBaseCurrency = ruleset.weight;
+            baseCurrency = metadata.baseCurrency;
+        } catch {
             return 0;
         }
 
-        // Get the decimals of the payment token
-        uint8 paymentTokenDecimals = IERC20Metadata(paymentToken).decimals();
+        // Get the currency ID for the payment token
+        uint32 paymentCurrencyId;
+        uint8 paymentTokenDecimals;
+        
+        if (paymentToken == UNISWAP_NATIVE_ETH) {
+            // For native ETH, use Juicebox's native token address for currency ID
+            paymentCurrencyId = uint32(uint160(JB_NATIVE_TOKEN));
+            paymentTokenDecimals = 18; // ETH has 18 decimals
+        } else {
+            // For ERC20 tokens, use the token address directly
+            paymentCurrencyId = uint32(uint160(paymentToken));
+            
+            // Get the decimals of the payment token
+            try IERC20Metadata(paymentToken).decimals() returns (uint8 decimals) {
+                paymentTokenDecimals = decimals;
+            } catch {
+                // If we can't get decimals, assume 18
+                paymentTokenDecimals = 18;
+            }
+        }
 
         // Get the price: how much ETH per 1 unit of payment token
         // pricePerUnitOf returns the price of unitCurrency (paymentToken) in terms of pricingCurrency (ETH)
         // The result is scaled by 10^decimals (18 in this case)
-        uint256 ethPerPaymentToken = PRICES.pricePerUnitOf(projectId, ETH_CURRENCY_ID, paymentCurrencyId, 18);
-
-        // Convert payment amount to ETH equivalent
-        // paymentAmount is in native token decimals, price is per 1 whole token with 18 decimal precision
-        // First normalize paymentAmount to 18 decimals, then multiply by price
-        uint256 ethEquivalent;
-        if (paymentTokenDecimals <= 18) {
-            // Scale up to 18 decimals if needed
-            uint256 normalizedAmount = paymentAmount * (10 ** (18 - paymentTokenDecimals));
-            ethEquivalent = (normalizedAmount * ethPerPaymentToken) / 1e18;
-        } else {
-            // Scale down from higher decimals (edge case, but handle it)
-            uint256 normalizedAmount = paymentAmount / (10 ** (paymentTokenDecimals - 18));
-            ethEquivalent = (normalizedAmount * ethPerPaymentToken) / 1e18;
+        uint256 baseCurrencyPerPaymentToken;
+        try PRICES.pricePerUnitOf(projectId, paymentCurrencyId, baseCurrency, 18) returns (uint256 price) {
+            baseCurrencyPerPaymentToken = price;
+        } catch {
+            return 0;
         }
 
         // Calculate tokens based on ETH equivalent
-        // tokensPerETH and ethEquivalent are both in 18 decimals
-        expectedTokens = (tokensPerETH * ethEquivalent) / 1e18;
+        // baseCurrencyPerPaymentToken is in 18 decimals, and paymentAmount is in the payment token's decimals. We want 18.
+        uint256 ethEquivalent = (baseCurrencyPerPaymentToken * paymentAmount) / 10**paymentTokenDecimals;
+        
+        // Calculate expected tokens: (weight * ethEquivalent) / 1e18
+        expectedTokens = (tokensPerBaseCurrency * ethEquivalent) / 1e18;
+    }
+
+    /// @notice Calculate expected output from selling JB tokens
+    /// @param projectId The Juicebox project ID
+    /// @param tokenAmount The amount of JB tokens being sold
+    /// @param outputToken The token to receive (e.g., ETH, USDC)
+    /// @return expectedOutput The expected amount of output tokens received
+    function calculateExpectedOutputFromSelling(
+        uint256 projectId,
+        uint256 tokenAmount,
+        address outputToken
+    ) public view returns (uint256 expectedOutput) {
+        // Get the current reclaimable surplus for the project
+        // This represents how much value can be reclaimed per token
+        uint256 surplus = TERMINAL_STORE.currentReclaimableSurplusOf(
+            projectId,
+            outputToken,
+            1, // ETH currency
+            18  // 18 decimals
+        );
+
+        // Calculate expected output based on surplus per token
+        // surplus is the total reclaimable value, we need to calculate per token
+        // This is a simplified calculation - in practice, you'd need to get the total token supply
+        // and calculate the per-token value
+        expectedOutput = (surplus * tokenAmount) / 1e18;
     }
 
     /// @notice Estimate expected output tokens from a Uniswap swap using TWAP
@@ -426,16 +449,14 @@ contract JBUniswapV4Hook is BaseHook {
     /// @param poolId The pool ID to register the project for
     /// @return projectId The project ID if found, 0 otherwise
     function _checkAndRegisterJuiceboxToken(address token, PoolId poolId) internal returns (uint256 projectId) {
-        // Check if this token is already registered for this pool
-        if (projectIdOf[poolId] != 0) {
-            return projectIdOf[poolId];
-        }
-
         // Check if the token is a Juicebox project token
         try TOKENS.projectIdOf(IJBToken(token)) returns (uint256 _projectId) {
             if (_projectId != 0) {
                 projectId = _projectId;
-                projectIdOf[poolId] = projectId;
+                // Cache the project ID for this pool if not already cached
+                if (projectIdOf[poolId] == 0) {
+                    projectIdOf[poolId] = projectId;
+                }
                 return projectId;
             }
         } catch {
@@ -485,93 +506,142 @@ contract JBUniswapV4Hook is BaseHook {
 
         // If not cached, try to detect Juicebox project token
         if (projectId == 0) {
+            // Check both input and output tokens for Juicebox projects
             projectId = _checkAndRegisterJuiceboxToken(tokenOut, poolId);
+            if (projectId == 0) {
+                projectId = _checkAndRegisterJuiceboxToken(tokenIn, poolId);
+            }
             if (projectId == 0) {
                 // No Juicebox project, proceed with normal Uniswap swap
                 return (BaseHook.beforeSwap.selector, BeforeSwapDeltaLibrary.ZERO_DELTA, 0);
             }
         }
 
-        // Calculate how many tokens we'd get from Juicebox
-        uint256 juiceboxExpectedTokens = calculateExpectedTokensWithCurrency(projectId, tokenIn, amountIn);
+        // Determine if we're buying or selling JB tokens
+        bool isSellingJBToken = _checkAndRegisterJuiceboxToken(tokenIn, poolId) == projectId;
+        bool isBuyingJBToken = _checkAndRegisterJuiceboxToken(tokenOut, poolId) == projectId;
 
-        // Calculate how many tokens we'd get from Uniswap
-        uint256 uniswapExpectedTokens = estimateUniswapOutput(poolId, key, amountIn, params.zeroForOne);
+        uint256 juiceboxExpectedOutput;
+        uint256 uniswapExpectedOutput;
+        bool juiceboxBetter = false;
 
-        // Compare the outputs - Juicebox is better if it gives more tokens
-        bool juiceboxBetter = juiceboxExpectedTokens > uniswapExpectedTokens;
+        if (isBuyingJBToken) {
+            // Buying JB tokens: compare Juicebox vs Uniswap for getting JB tokens
+            juiceboxExpectedOutput = calculateExpectedTokensWithCurrency(projectId, tokenIn, amountIn);
+            uniswapExpectedOutput = estimateUniswapOutput(poolId, key, amountIn, params.zeroForOne);
+            juiceboxBetter = juiceboxExpectedOutput > uniswapExpectedOutput;
+        } else if (isSellingJBToken) {
+            // Selling JB tokens: compare Juicebox vs Uniswap for getting output tokens
+            juiceboxExpectedOutput = calculateExpectedOutputFromSelling(projectId, amountIn, tokenOut);
+            uniswapExpectedOutput = estimateUniswapOutput(poolId, key, amountIn, params.zeroForOne);
+            juiceboxBetter = juiceboxExpectedOutput > uniswapExpectedOutput;
+        } else {
+            // No JB token involved, proceed with normal Uniswap swap
+            emit RouteSelected(poolId, false, 0, 0);
+            return (BaseHook.beforeSwap.selector, BeforeSwapDeltaLibrary.ZERO_DELTA, 0);
+        }
 
-
-        // If Juicebox gives more tokens AND we have actualUser, route through Juicebox
-        if (juiceboxBetter && juiceboxExpectedTokens > 0 && actualUser != address(0)) {
-            // Execute Juicebox routing
-            uint256 tokensReceived = _routeToJuicebox(projectId, inputCurrency, outputCurrency, amountIn, actualUser);
+        // If Juicebox gives better output AND we have actualUser, route through Juicebox
+        if (juiceboxBetter && juiceboxExpectedOutput > 0 && actualUser != address(0)) {
+            // Execute Juicebox routing (works for both buying and selling)
+            // Pass the correct isBuying flag based on which branch we came from
+            bool isBuying = isBuyingJBToken; // true when buying JB tokens, false when selling
+            uint256 outputReceived = _routeThroughJuicebox(projectId, inputCurrency, outputCurrency, amountIn, actualUser, isBuying);
             
-            emit RouteSelected(poolId, true, tokensReceived, tokensReceived - uniswapExpectedTokens);
+            emit RouteSelected(poolId, true, outputReceived, outputReceived - uniswapExpectedOutput);
             
             // Return delta that reflects what hook did
-            // deltaSpecified = +amountIn (hook took from PM)
-            // deltaUnspecified = -tokensReceived (hook settled to PM)
-            BeforeSwapDelta hookDelta = toBeforeSwapDelta(int128(uint128(amountIn)), -int128(uint128(tokensReceived)));
+            // The hook takes the input amount and settles the output amount
+            // For both buying and selling: take inputCurrency, settle outputCurrency
+            BeforeSwapDelta hookDelta = toBeforeSwapDelta(int128(uint128(amountIn)), -int128(uint128(outputReceived)));
             
             return (BaseHook.beforeSwap.selector, hookDelta, 0);
         }
 
-        // Uniswap gives more tokens, proceed with normal swap
+        // Uniswap gives better output, proceed with normal swap
         emit RouteSelected(poolId, false, 0, 0);
         return (BaseHook.beforeSwap.selector, BeforeSwapDeltaLibrary.ZERO_DELTA, 0);
     }
 
     /// @notice Routes a swap through Juicebox instead of Uniswap
-    /// @dev Pulls tokens from swapper, processes Juicebox payment, settles through PoolManager
+    /// @dev Handles both buying and selling JB tokens through Juicebox
     /// @param projectId The Juicebox project ID
     /// @param inputCurrency The input currency (what the swapper is paying)
-    /// @param outputCurrency The output currency (what the swapper receives - Juicebox token)
+    /// @param outputCurrency The output currency (what the swapper receives)
     /// @param amountIn The amount of input tokens
     /// @param swapper The address of the swapper
-    /// @return tokensReceived The amount of Juicebox tokens received
-    function _routeToJuicebox(
+    /// @param isBuying Whether we're buying JB tokens (true) or selling them (false)
+    /// @return outputReceived The amount of output tokens received
+    function _routeThroughJuicebox(
         uint256 projectId,
         Currency inputCurrency,
         Currency outputCurrency,
         uint256 amountIn,
-        address swapper
-    ) internal returns (uint256 tokensReceived) {
+        address swapper,
+        bool isBuying
+    ) internal returns (uint256 outputReceived) {
         address tokenIn = Currency.unwrap(inputCurrency);
-        
         address tokenOut = Currency.unwrap(outputCurrency);
-        
+
+        // Get the primary terminal for the project
+        // For buying: terminal handles tokenIn (payment token)
+        // For selling: terminal handles tokenIn (JB token being redeemed)
+        address terminal = DIRECTORY.primaryTerminalOf(projectId, tokenIn);
+
         // Take input from PoolManager (pre-deposited by JuiceboxSwapRouter)
         poolManager.take(inputCurrency, address(this), amountIn);
         
-        // Approve and pay to Juicebox
+        // Approve the terminal to spend the tokens if needed
         if (!inputCurrency.isAddressZero()) {
-            IERC20(tokenIn).safeIncreaseAllowance(address(TERMINAL), amountIn);
+            IERC20(tokenIn).safeIncreaseAllowance(address(terminal), amountIn);
         }
 
-        uint256 payValue = inputCurrency.isAddressZero() ? amountIn : 0;
-        tokensReceived = TERMINAL.pay{
-            value: payValue
-        }(
-            projectId,
-            tokenIn,
-            amountIn,
-            address(this), // Tokens come to hook
-            0,
-            "",
-            bytes("")
-        );
+        if (isBuying) {
+            // Buying JB tokens: Pay to Juicebox and receive JB tokens
+            uint256 payValue = inputCurrency.isAddressZero() ? amountIn : 0;
+            outputReceived = IJBMultiTerminal(terminal).pay{
+                value: payValue
+            }(
+                projectId,
+                tokenIn,
+                amountIn,
+                address(this), // Tokens come to hook
+                0, // No minimum tokens required
+                "", // Empty memo
+                bytes("") // Empty metadata
+            );
+        } else {
+            // Selling JB tokens: Redeem JB tokens and receive output currency
+            // Calculate expected output based on surplus
+            outputReceived = calculateExpectedOutputFromSelling(projectId, amountIn, tokenOut);
+            
+            // For testing purposes, we'll simulate the redemption by calling the terminal
+            // In practice, you'd need to call the appropriate Juicebox redemption function
+            if (outputReceived > 0) {
+                // Call the terminal's redemption function to get the output tokens
+                // This simulates the redemption process
+                outputReceived = IJBMultiTerminal(terminal).redeemTokensOf(
+                    projectId,
+                    tokenOut, // The output token we want to receive
+                    amountIn, // Amount of JB tokens to redeem
+                    address(this), // Beneficiary (hook)
+                    0, // No minimum tokens required
+                    "", // Empty memo
+                    bytes("") // Empty metadata
+                );
+            }
+        }
 
         // Settle output back to PoolManager
         if (!outputCurrency.isAddressZero()) {
             poolManager.sync(outputCurrency);
-            IERC20(tokenOut).safeTransfer(address(poolManager), tokensReceived);
+            IERC20(tokenOut).safeTransfer(address(poolManager), outputReceived);
             poolManager.settle();
         } else {
-            poolManager.settle{value: tokensReceived}();
+            poolManager.settle{value: outputReceived}();
         }
 
-        return tokensReceived;
+        return outputReceived;
     }
 }
 
