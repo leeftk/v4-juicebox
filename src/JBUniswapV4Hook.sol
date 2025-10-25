@@ -205,14 +205,10 @@ contract JBUniswapV4Hook is BaseHook {
         // Get the decimals of the payment token
         uint8 paymentTokenDecimals;
         
-        if (paymentToken == UNISWAP_NATIVE_ETH) {
+        if (paymentToken == JB_NATIVE_TOKEN) {
             // For native ETH, use Juicebox's native token address for currency ID
-            paymentCurrencyId = uint32(uint160(JB_NATIVE_TOKEN));
             paymentTokenDecimals = 18; // ETH has 18 decimals
         } else {
-            // For ERC20 tokens, use the token address directly
-            paymentCurrencyId = uint32(uint160(paymentToken));
-            
             // Get the decimals of the payment token
             try IERC20Metadata(paymentToken).decimals() returns (uint8 decimals) {
                 paymentTokenDecimals = decimals;
