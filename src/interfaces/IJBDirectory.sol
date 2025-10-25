@@ -8,3 +8,4 @@ interface IJBDirectory {
     /// @return terminal The primary terminal for the project
     function primaryTerminalOf(uint256 projectId, address token) external view returns (address terminal);
 }
+

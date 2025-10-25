@@ -9,18 +9,20 @@ import {HookMiner} from "@uniswap/v4-periphery/src/utils/HookMiner.sol";
 
 import {JBUniswapV4Hook} from "../src/JBUniswapV4Hook.sol";
 import {IJBTokens} from "../src/interfaces/IJBTokens.sol";
-import {IJBMultiTerminal} from "../src/interfaces/IJBMultiTerminal.sol";
+import {IJBDirectory} from "../src/interfaces/IJBDirectory.sol";
 import {IJBController} from "../src/interfaces/IJBController.sol";
 import {IJBPrices} from "../src/interfaces/IJBPrices.sol";
+import {IJBTerminalStore} from "../src/interfaces/IJBTerminalStore.sol";
 
 /// @title DeployJBUniswapV4Hook
 /// @notice Script to deploy the JBUniswapV4Hook with multi-currency support
 contract DeployJBUniswapV4Hook is Script {
     // Default test addresses (override with environment variables)
     address constant DEFAULT_JB_TOKENS = 0x1234567890123456789012345678901234567890;
-    address constant DEFAULT_JB_MULTI_TERMINAL = 0x2345678901234567890123456789012345678901;
+    address constant DEFAULT_JB_DIRECTORY = 0x2345678901234567890123456789012345678901;
     address constant DEFAULT_JB_CONTROLLER = 0x3456789012345678901234567890123456789012;
     address constant DEFAULT_JB_PRICES = 0x4567890123456789012345678901234567890123;
+    address constant DEFAULT_JB_TERMINAL_STORE = 0x5678901234567890123456789012345678901234;
 
     function run() external {
         // Get the pool manager address from environment or use a default
@@ -29,9 +31,10 @@ contract DeployJBUniswapV4Hook is Script {
 
         // Get Juicebox addresses from environment or use defaults
         address jbTokens = vm.envOr("JB_TOKENS", DEFAULT_JB_TOKENS);
-        address jbMultiTerminal = vm.envOr("JB_MULTI_TERMINAL", DEFAULT_JB_MULTI_TERMINAL);
+        address jbDirectory = vm.envOr("JB_DIRECTORY", DEFAULT_JB_DIRECTORY);
         address jbController = vm.envOr("JB_CONTROLLER", DEFAULT_JB_CONTROLLER);
         address jbPrices = vm.envOr("JB_PRICES", DEFAULT_JB_PRICES);
+        address jbTerminalStore = vm.envOr("JB_TERMINAL_STORE", DEFAULT_JB_TERMINAL_STORE);
 
         uint256 deployerPrivateKey = vm.envUint("PRIVATE_KEY");
         address deployer = vm.addr(deployerPrivateKey);
@@ -40,16 +43,17 @@ contract DeployJBUniswapV4Hook is Script {
         console2.log("  Deployer:", deployer);
         console2.log("  Pool Manager:", poolManager);
         console2.log("  JB Tokens:", jbTokens);
-        console2.log("  JB Multi Terminal:", jbMultiTerminal);
+        console2.log("  JB Directory:", jbDirectory);
         console2.log("  JB Controller:", jbController);
         console2.log("  JB Prices:", jbPrices);
+        console2.log("  JB Terminal Store:", jbTerminalStore);
 
         vm.startBroadcast(deployerPrivateKey);
 
         // Get hook permissions to determine the required address flags
         Hooks.Permissions memory permissions = Hooks.Permissions({
             beforeInitialize: false,
-            afterInitialize: false,
+            afterInitialize: true,
             beforeAddLiquidity: false,
             afterAddLiquidity: false,
             beforeRemoveLiquidity: false,
@@ -65,15 +69,16 @@ contract DeployJBUniswapV4Hook is Script {
         });
 
         // Calculate the required flags for the hook permissions
-        uint160 flags = uint160(Hooks.BEFORE_SWAP_FLAG | Hooks.AFTER_SWAP_FLAG);
+        uint160 flags = uint160(Hooks.BEFORE_SWAP_FLAG | Hooks.AFTER_SWAP_FLAG | Hooks.AFTER_INITIALIZE_FLAG);
 
         // Prepare constructor arguments
         bytes memory constructorArgs = abi.encode(
             IPoolManager(poolManager),
             IJBTokens(jbTokens),
-            IJBMultiTerminal(jbMultiTerminal),
+            IJBDirectory(jbDirectory),
             IJBController(jbController),
-            IJBPrices(jbPrices)
+            IJBPrices(jbPrices),
+            IJBTerminalStore(jbTerminalStore)
         );
 
         // Find a valid hook address using HookMiner
@@ -89,9 +94,10 @@ contract DeployJBUniswapV4Hook is Script {
         }(
             IPoolManager(poolManager),
             IJBTokens(jbTokens),
-            IJBMultiTerminal(jbMultiTerminal),
+            IJBDirectory(jbDirectory),
             IJBController(jbController),
-            IJBPrices(jbPrices)
+            IJBPrices(jbPrices),
+            IJBTerminalStore(jbTerminalStore)
         );
 
         console2.log("JBUniswapV4Hook deployed at:", address(hook));
