@@ -150,15 +150,6 @@ contract JBUniswapV4Hook is BaseHook {
     /// @notice Receive function to accept ETH
     receive() external payable {}
 
-    /// @notice Increase the oracle cardinality for a pool
-    /// @param poolId The pool ID
-    /// @param cardinalityNext The new cardinality target
-    function increaseCardinalityNext(PoolId poolId, uint16 cardinalityNext) external {
-        ObservationState memory state = states[poolId];
-        uint16 cardinalityNextNew = observations[poolId].grow(state.cardinality, cardinalityNext);
-        states[poolId].cardinalityNext = cardinalityNextNew;
-    }
-
     //*********************************************************************//
     // ------------------------- public views ---------------------------- //
     //*********************************************************************//
@@ -184,20 +175,6 @@ contract JBUniswapV4Hook is BaseHook {
         });
     }
 
-    /// @notice Calculate expected tokens for a given payment amount in ETH
-    /// @param projectId The Juicebox project ID
-    /// @param ethAmount The amount of ETH being paid
-    /// @return expectedTokens The expected number of tokens to be received
-    function calculateExpectedTokens(uint256 projectId, uint256 ethAmount)
-        external
-        view
-        returns (uint256 expectedTokens)
-    {
-        (JBRuleset memory ruleset,) = CONTROLLER.currentRulesetOf(projectId);
-        // Weight represents tokens issued per ETH paid
-        expectedTokens = (ruleset.weight * ethAmount) / 1e18;
-    }
-
     /// @notice Calculate expected tokens for a given payment amount in any currency
     /// @param projectId The Juicebox project ID
     /// @param paymentToken The token being used for payment
@@ -219,18 +196,19 @@ contract JBUniswapV4Hook is BaseHook {
             return 0;
         }
 
+        // Use Juicebox's address for native token if the payment token is uniswap's native token.
+        if (paymentToken == UNISWAP_NATIVE_ETH) paymentToken = JB_NATIVE_TOKEN;
+
         // Get the currency ID for the payment token
-        uint32 paymentCurrencyId;
+        uint32 paymentCurrencyId = uint32(uint160(paymentToken));
+
+        // Get the decimals of the payment token
         uint8 paymentTokenDecimals;
         
-        if (paymentToken == UNISWAP_NATIVE_ETH) {
+        if (paymentToken == JB_NATIVE_TOKEN) {
             // For native ETH, use Juicebox's native token address for currency ID
-            paymentCurrencyId = uint32(uint160(JB_NATIVE_TOKEN));
             paymentTokenDecimals = 18; // ETH has 18 decimals
         } else {
-            // For ERC20 tokens, use the token address directly
-            paymentCurrencyId = uint32(uint160(paymentToken));
-            
             // Get the decimals of the payment token
             try IERC20Metadata(paymentToken).decimals() returns (uint8 decimals) {
                 paymentTokenDecimals = decimals;
@@ -252,10 +230,7 @@ contract JBUniswapV4Hook is BaseHook {
 
         // Calculate tokens based on ETH equivalent
         // baseCurrencyPerPaymentToken is in 18 decimals, and paymentAmount is in the payment token's decimals. We want 18.
-        uint256 ethEquivalent = (baseCurrencyPerPaymentToken * paymentAmount) / 10**paymentTokenDecimals;
-        
-        // Calculate expected tokens: (weight * ethEquivalent) / 1e18
-        expectedTokens = (tokensPerBaseCurrency * ethEquivalent) / 1e18;
+        expectedTokens = (baseCurrencyPerPaymentToken * paymentAmount) / paymentTokenDecimals;
     }
 
     /// @notice Calculate expected output from selling JB tokens
