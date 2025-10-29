@@ -218,8 +218,8 @@ contract JBUniswapV4Hook is BaseHook {
             }
         }
 
-        // Get the price: how much ETH per 1 unit of payment token
-        // pricePerUnitOf returns the price of unitCurrency (paymentToken) in terms of pricingCurrency (ETH)
+        // Get the price: how much baseCurrency per 1 unit of payment token
+        // pricePerUnitOf returns the price of unitCurrency (paymentToken) in terms of pricingCurrency (baseCurrency)
         // The result is scaled by 10^decimals (18 in this case)
         uint256 baseCurrencyPerPaymentToken;
         try PRICES.pricePerUnitOf(projectId, paymentCurrencyId, baseCurrency, 18) returns (uint256 price) {
@@ -228,9 +228,24 @@ contract JBUniswapV4Hook is BaseHook {
             return 0;
         }
 
-        // Calculate tokens based on ETH equivalent
-        // baseCurrencyPerPaymentToken is in 18 decimals, and paymentAmount is in the payment token's decimals. We want 18.
-        expectedTokens = (baseCurrencyPerPaymentToken * paymentAmount) / paymentTokenDecimals;
+        // Calculate tokens based on the payment amount and weight
+        // Formula: expectedTokens = (tokensPerBaseCurrency * paymentAmount * baseCurrencyPerPaymentToken) / (1e18 * paymentTokenDecimals)
+        // This converts paymentAmount to baseCurrency, then multiplies by tokensPerBaseCurrency
+        // Use FullMath for safe multiplication to prevent overflow
+        
+        if (paymentTokenDecimals == 18) {
+            // For 18-decimal tokens, use FullMath to safely multiply three numbers
+            // First multiply tokensPerBaseCurrency and paymentAmount
+            uint256 intermediate = FullMath.mulDiv(tokensPerBaseCurrency, paymentAmount, 1e18);
+            // Then multiply by baseCurrencyPerPaymentToken and divide by 1e18
+            expectedTokens = FullMath.mulDiv(intermediate, baseCurrencyPerPaymentToken, 1e18);
+        } else {
+            // Convert paymentAmount to 18 decimals first
+            uint256 paymentAmount18 = (paymentAmount * 1e18) / (10 ** paymentTokenDecimals);
+            // Use FullMath for safe multiplication
+            uint256 intermediate = FullMath.mulDiv(tokensPerBaseCurrency, paymentAmount18, 1e18);
+            expectedTokens = FullMath.mulDiv(intermediate, baseCurrencyPerPaymentToken, 1e18);
+        }
     }
 
     /// @notice Calculate expected output from selling JB tokens
