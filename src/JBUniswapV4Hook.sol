@@ -113,11 +113,8 @@ contract JBUniswapV4Hook is BaseHook {
     /// @notice TWAP period in seconds (30 minutes by default)
     uint32 public constant TWAP_PERIOD = 1800;
 
-    /// @notice Projects cannot specify a TWAP window longer than this constant.
-    uint256 public constant MAX_TWAP_WINDOW = 2 days;
-
-    /// @notice Projects cannot specify a TWAP window shorter than this constant.
-    uint256 public constant MIN_TWAP_WINDOW = 2 minutes;
+    /// @notice Standard TWAP window in seconds (1 hour by default)
+    uint256 public constant STANDARD_TWAP_WINDOW = 1 hours;
 
     /// @notice The denominator used when calculating TWAP slippage percent values.
     uint256 public constant TWAP_SLIPPAGE_DENOMINATOR = 10_000;
@@ -138,9 +135,6 @@ contract JBUniswapV4Hook is BaseHook {
     /// @notice The current observation array state for the given pool ID
     mapping(PoolId => ObservationState) public states;
 
-    /// @notice The TWAP window for the given project. The TWAP window is the period of time over which the TWAP is computed.
-    /// @custom:param projectId The ID of the project to get the twap window for.
-    mapping(uint256 projectId => uint256) public twapWindowOf;
 
     //*********************************************************************//
     // ---------------------------- events ------------------------------- //
@@ -167,6 +161,7 @@ contract JBUniswapV4Hook is BaseHook {
         uint256 expectedTokens,
         uint256 savings
     );
+
 
     //*********************************************************************//
     // -------------------------- constructor ---------------------------- //
@@ -506,11 +501,8 @@ contract JBUniswapV4Hook is BaseHook {
             return 0;
         }
 
-        // Unpack the TWAP params and get a reference to the period.
-        uint256 twapWindow = twapWindowOf[projectId];
-
-        // If no TWAP window is set, use a default of 1 hour
-        if (twapWindow == 0) twapWindow = 1 hours;
+        // Use the standard TWAP window
+        uint256 twapWindow = STANDARD_TWAP_WINDOW;
 
         // If the oldest observation is younger than the TWAP window, use the oldest observation.
         uint32 oldestObservation = OracleLibrary.getOldestObservationSecondsAgo(v3Pool);
@@ -910,22 +902,6 @@ contract JBUniswapV4Hook is BaseHook {
         }
 
         return outputReceived;
-    }
-
-    /// @notice Set the TWAP window for a project
-    /// @dev This can be called by the project owner or an authorized address
-    /// @param projectId The ID of the project to set the TWAP window for
-    /// @param twapWindow The TWAP window in seconds
-    function setTwapWindow(uint256 projectId, uint256 twapWindow) external {
-        // For now, allow anyone to set TWAP windows
-        // In production, you might want to add access control
-        
-        // Make sure the specified window is within reasonable bounds
-        if (twapWindow < MIN_TWAP_WINDOW || twapWindow > MAX_TWAP_WINDOW) {
-            revert("Invalid TWAP window");
-        }
-
-        twapWindowOf[projectId] = twapWindow;
     }
 }
 
