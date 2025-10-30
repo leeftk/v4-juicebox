@@ -444,27 +444,9 @@ contract JBUniswapV4Hook is BaseHook {
         uint256 amountIn,
         bool zeroForOne
     ) public view returns (uint256 estimatedOut) {
-        // Only check 10000 fee tier (1%)
-        address v3Pool = V3_FACTORY.getPool(token0, token1, 10000);
-        
-        // If pool doesn't exist, return 0
-        if (v3Pool == address(0)) {
-            return 0;
-        }
-
-        // Get current pool state to check if unlocked
-        (,,,,,, bool unlocked) = IUniswapV3Pool(v3Pool).slot0();
-        
-        // Check if pool is unlocked
-        if (!unlocked) {
-            return 0;
-        }
-
-        // Use TWAP calculation with slippage protection
-        // For now, we'll use a default project ID of 0 for TWAP window
-        // In a real implementation, you might want to pass the project ID as a parameter
+        // Use _getQuote which handles the factory call internally
+        // Pass the tokens in the correct order for the quote
         estimatedOut = _getQuote(0, zeroForOne ? token1 : token0, amountIn, zeroForOne ? token0 : token1);
-
         return estimatedOut;
     }
 
