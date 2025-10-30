@@ -10,10 +10,8 @@ interface IJBTerminalStore {
     /// @param currency The currency ID
     /// @param decimals The number of decimals
     /// @return surplus The current reclaimable surplus
-    function currentReclaimableSurplusOf(
-        uint256 projectId,
-        address token,
-        uint256 currency,
-        uint256 decimals
-    ) external view returns (uint256 surplus);
+    function currentReclaimableSurplusOf(uint256 projectId, address token, uint256 currency, uint256 decimals)
+        external
+        view
+        returns (uint256 surplus);
 }

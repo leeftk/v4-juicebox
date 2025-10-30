@@ -18,7 +18,7 @@ contract JuiceboxSwapRouter {
     using CurrencySettler for Currency;
 
     IPoolManager public immutable poolManager;
-    
+
     // Track the current sender for hooks to query
     address private _msgSender;
 
@@ -32,7 +32,7 @@ contract JuiceboxSwapRouter {
     constructor(IPoolManager _poolManager) {
         poolManager = _poolManager;
     }
-    
+
     /// @notice Returns the actual user address (for hooks to query)
     function msgSender() external view returns (address) {
         return _msgSender;
@@ -45,14 +45,13 @@ contract JuiceboxSwapRouter {
     function swap(PoolKey memory key, SwapParams memory params) external payable returns (BalanceDelta delta) {
         // Set msgSender for hooks to query
         _msgSender = msg.sender;
-        
+
         // Encode router address in hookData so hook can call msgSender() on it
         bytes memory hookData = abi.encode(address(this));
-        
-        delta = abi.decode(
-            poolManager.unlock(abi.encode(CallbackData(msg.sender, key, params, hookData))), (BalanceDelta)
-        );
-        
+
+        delta =
+            abi.decode(poolManager.unlock(abi.encode(CallbackData(msg.sender, key, params, hookData))), (BalanceDelta));
+
         // Clear msgSender
         _msgSender = address(0);
     }
@@ -65,10 +64,10 @@ contract JuiceboxSwapRouter {
         // Determine input currency based on swap direction
         Currency inputCurrency = data.params.zeroForOne ? data.key.currency0 : data.key.currency1;
         Currency outputCurrency = data.params.zeroForOne ? data.key.currency1 : data.key.currency0;
-        
+
         // Get input amount (absolute value)
-        uint256 inputAmount = data.params.amountSpecified < 0 
-            ? uint256(-data.params.amountSpecified) 
+        uint256 inputAmount = data.params.amountSpecified < 0
+            ? uint256(-data.params.amountSpecified)
             : uint256(data.params.amountSpecified);
 
         // PRE-DEPOSIT: Transfer input tokens from user to this router, then to PoolManager
@@ -77,7 +76,7 @@ contract JuiceboxSwapRouter {
             IERC20 inputToken = IERC20(Currency.unwrap(inputCurrency));
             // Transfer from user to router
             inputToken.safeTransferFrom(data.sender, address(this), inputAmount);
-            
+
             // Now settle from router to PoolManager (payer = address(this))
             inputCurrency.settle(poolManager, address(this), inputAmount, false);
         } else {
@@ -109,7 +108,7 @@ contract JuiceboxSwapRouter {
         if (delta1 < 0) {
             data.key.currency1.settle(poolManager, data.sender, uint256(-delta1), false);
         }
-        
+
         // Take any credits from PoolManager
         if (delta0 > 0) {
             data.key.currency0.take(poolManager, data.sender, uint256(delta0), false);

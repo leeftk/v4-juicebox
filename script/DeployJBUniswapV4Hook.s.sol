@@ -13,6 +13,7 @@ import {IJBDirectory} from "../src/interfaces/IJBDirectory.sol";
 import {IJBController} from "../src/interfaces/IJBController.sol";
 import {IJBPrices} from "../src/interfaces/IJBPrices.sol";
 import {IJBTerminalStore} from "../src/interfaces/IJBTerminalStore.sol";
+import {IUniswapV3Factory} from "../src/interfaces/IUniswapV3Factory.sol";
 
 /// @title DeployJBUniswapV4Hook
 /// @notice Script to deploy the JBUniswapV4Hook with multi-currency support
@@ -23,6 +24,7 @@ contract DeployJBUniswapV4Hook is Script {
     address constant DEFAULT_JB_CONTROLLER = 0x3456789012345678901234567890123456789012;
     address constant DEFAULT_JB_PRICES = 0x4567890123456789012345678901234567890123;
     address constant DEFAULT_JB_TERMINAL_STORE = 0x5678901234567890123456789012345678901234;
+    address constant DEFAULT_V3_FACTORY = address(0); // v3 factory disabled for now
 
     function run() external {
         // Get the pool manager address from environment or use a default
@@ -35,6 +37,7 @@ contract DeployJBUniswapV4Hook is Script {
         address jbController = vm.envOr("JB_CONTROLLER", DEFAULT_JB_CONTROLLER);
         address jbPrices = vm.envOr("JB_PRICES", DEFAULT_JB_PRICES);
         address jbTerminalStore = vm.envOr("JB_TERMINAL_STORE", DEFAULT_JB_TERMINAL_STORE);
+        address v3Factory = vm.envOr("V3_FACTORY", DEFAULT_V3_FACTORY);
 
         uint256 deployerPrivateKey = vm.envUint("PRIVATE_KEY");
         address deployer = vm.addr(deployerPrivateKey);
@@ -78,7 +81,8 @@ contract DeployJBUniswapV4Hook is Script {
             IJBDirectory(jbDirectory),
             IJBController(jbController),
             IJBPrices(jbPrices),
-            IJBTerminalStore(jbTerminalStore)
+            IJBTerminalStore(jbTerminalStore),
+            IUniswapV3Factory(v3Factory)
         );
 
         // Find a valid hook address using HookMiner
@@ -97,7 +101,8 @@ contract DeployJBUniswapV4Hook is Script {
             IJBDirectory(jbDirectory),
             IJBController(jbController),
             IJBPrices(jbPrices),
-            IJBTerminalStore(jbTerminalStore)
+            IJBTerminalStore(jbTerminalStore),
+            IUniswapV3Factory(v3Factory)
         );
 
         console2.log("JBUniswapV4Hook deployed at:", address(hook));
