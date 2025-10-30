@@ -84,6 +84,52 @@ contract MockJBPrices {
     }
 }
 
+contract MockUniswapV3Factory {
+    mapping(bytes32 => address) public pools;
+    
+    function getPool(address tokenA, address tokenB, uint24 fee) external view returns (address pool) {
+        // Ensure tokenA < tokenB for consistent key generation
+        if (tokenA > tokenB) {
+            (tokenA, tokenB) = (tokenB, tokenA);
+        }
+        bytes32 key = keccak256(abi.encodePacked(tokenA, tokenB, fee));
+        return pools[key];
+    }
+    
+    function setPool(address tokenA, address tokenB, uint24 fee, address pool) external {
+        if (tokenA > tokenB) {
+            (tokenA, tokenB) = (tokenB, tokenA);
+        }
+        bytes32 key = keccak256(abi.encodePacked(tokenA, tokenB, fee));
+        pools[key] = pool;
+    }
+}
+
+contract MockUniswapV3Pool {
+    uint160 public sqrtPriceX96;
+    bool public unlocked = true;
+    
+    function setSqrtPriceX96(uint160 _sqrtPriceX96) external {
+        sqrtPriceX96 = _sqrtPriceX96;
+    }
+    
+    function setUnlocked(bool _unlocked) external {
+        unlocked = _unlocked;
+    }
+    
+    function slot0() external view returns (
+        uint160 _sqrtPriceX96,
+        int24,
+        uint16,
+        uint16,
+        uint16,
+        uint8,
+        bool _unlocked
+    ) {
+        return (sqrtPriceX96, 0, 0, 0, 0, 0, unlocked);
+    }
+}
+
 contract MockJBMultiTerminal {
     uint256 public lastProjectId;
     address public lastToken;
@@ -236,7 +282,11 @@ contract JuiceboxHookTest is Test {
     MockJBMultiTerminal mockJBMultiTerminal;
     MockJBController mockJBController;
     MockJBPrices mockJBPrices;
+<<<<<<< Updated upstream
     MockJBTerminalStore mockJBTerminalStore;
+=======
+    MockUniswapV3Factory mockV3Factory;
+>>>>>>> Stashed changes
 
     PoolManager manager;
     PoolSwapTest swapRouter;
@@ -265,6 +315,7 @@ contract JuiceboxHookTest is Test {
         mockJBMultiTerminal = new MockJBMultiTerminal();
         mockJBController = new MockJBController();
         mockJBPrices = new MockJBPrices();
+<<<<<<< Updated upstream
         mockJBTerminalStore = new MockJBTerminalStore();
         
         // Set up the directory to point to the terminal
@@ -272,6 +323,9 @@ contract JuiceboxHookTest is Test {
         
         // Set up the terminal store reference in the terminal
         mockJBMultiTerminal.setTerminalStore(address(mockJBTerminalStore));
+=======
+        mockV3Factory = new MockUniswapV3Factory();
+>>>>>>> Stashed changes
 
         // Deploy the hook with proper address mining
         // Calculate the required flags for the hook permissions
@@ -288,7 +342,11 @@ contract JuiceboxHookTest is Test {
             IJBDirectory(address(mockJBDirectory)),
             IJBController(address(mockJBController)),
             IJBPrices(address(mockJBPrices)),
+<<<<<<< Updated upstream
             IJBTerminalStore(address(mockJBTerminalStore))
+=======
+            address(mockV3Factory)
+>>>>>>> Stashed changes
         );
 
         // Find a valid hook address using HookMiner
@@ -309,7 +367,11 @@ contract JuiceboxHookTest is Test {
             IJBDirectory(address(mockJBDirectory)),
             IJBController(address(mockJBController)),
             IJBPrices(address(mockJBPrices)),
+<<<<<<< Updated upstream
             IJBTerminalStore(address(mockJBTerminalStore))
+=======
+            address(mockV3Factory)
+>>>>>>> Stashed changes
         );
 
         // Deploy test tokens
@@ -944,6 +1006,54 @@ contract JuiceboxHookTest is Test {
             assertEq(hook.projectIdOf(newId), 0, "Should not be cached yet");
         }
     }
+<<<<<<< Updated upstream
+=======
+
+    function testV3PriceComparison() public {
+        // Deploy mock v3 pool for 10000 fee tier only
+        MockUniswapV3Pool v3Pool10000 = new MockUniswapV3Pool();
+        
+        // Set price for v3 pool
+        v3Pool10000.setSqrtPriceX96(79228162514264337593543950336 * 2); // 2:1 price
+        
+        // Register pool in the factory (only 10000 fee tier)
+        mockV3Factory.setPool(address(token0), address(token1), 10000, address(v3Pool10000));
+        
+        // Test v3 pool estimation
+        uint256 v3Output10000 = hook.estimateUniswapV3Output(address(token0), address(token1), 1 ether, true);
+        
+        // Should get some output from the v3 pool
+        assertGt(v3Output10000, 0, "v3 pool should return positive output");
+        
+        // Test that the factory returns the correct pool
+        address pool = mockV3Factory.getPool(address(token0), address(token1), 10000);
+        assertEq(pool, address(v3Pool10000), "Factory should return the correct pool");
+        
+        // Test that estimateUniswapV3Output works with the pool
+        uint256 output = hook.estimateUniswapV3Output(address(token0), address(token1), 1 ether, true);
+        assertEq(output, v3Output10000, "Should return the correct output");
+        
+        // Test with non-existent pool (different token pair)
+        MockERC20 nonExistentToken = new MockERC20("NonExistent", "NE");
+        uint256 nonExistentOutput = hook.estimateUniswapV3Output(address(token0), address(nonExistentToken), 1 ether, true);
+        assertEq(nonExistentOutput, 0, "Non-existent pool should return 0");
+    }
+
+    function testV3PoolUnlockedCheck() public {
+        // Deploy a locked v3 pool
+        MockUniswapV3Pool lockedPool = new MockUniswapV3Pool();
+        lockedPool.setUnlocked(false);
+        lockedPool.setSqrtPriceX96(79228162514264337593543950336);
+        
+        // Register the locked pool (10000 fee tier)
+        mockV3Factory.setPool(address(token0), address(token1), 10000, address(lockedPool));
+        
+        // Test that locked pool returns 0
+        uint256 lockedOutput = hook.estimateUniswapV3Output(address(token0), address(token1), 1 ether, true);
+        assertEq(lockedOutput, 0, "Locked pool should return 0");
+    }
+}
+>>>>>>> Stashed changes
 
     // ============================================
     // TWAP ORACLE FUZZ TESTS & PRICE MANIPULATION PROTECTION

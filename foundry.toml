@@ -8,5 +8,5 @@ out = "out"
 src = "src"
 via_ir = true
 
-[lint]
+[profile.lint]
 exclude_lints = ["screaming-snake-case-immutable", "screaming-snake-case-const"]

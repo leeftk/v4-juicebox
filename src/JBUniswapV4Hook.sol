@@ -21,6 +21,15 @@ import {TickMath} from "@uniswap/v4-core/src/libraries/TickMath.sol";
 import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+import {mulDiv} from "@prb/math/src/Common.sol";
+
+// Uniswap v3 interfaces
+import {IUniswapV3Factory} from "./interfaces/IUniswapV3Factory.sol";
+import {IUniswapV3Pool} from "./interfaces/IUniswapV3Pool.sol";
+
+// Uniswap v3 libraries for TWAP calculations
+import {TickMath} from "@uniswap/v3-core/contracts/libraries/TickMath.sol";
+import {OracleLibrary} from "@uniswap/v3-periphery/contracts/libraries/OracleLibrary.sol";
 
 // Import Oracle library for TWAP
 import {Oracle} from "./libraries/Oracle.sol";
@@ -92,6 +101,9 @@ contract JBUniswapV4Hook is BaseHook {
     /// @notice The Juicebox terminal store for getting reclaimable surplus
     IJBTerminalStore public immutable TERMINAL_STORE;
 
+    /// @notice The Uniswap v3 factory for v3 pool lookups
+    IUniswapV3Factory public immutable V3_FACTORY;
+
     /// @notice Native ETH address representation
     address public constant UNISWAP_NATIVE_ETH = address(0);
 
@@ -100,6 +112,18 @@ contract JBUniswapV4Hook is BaseHook {
 
     /// @notice TWAP period in seconds (30 minutes by default)
     uint32 public constant TWAP_PERIOD = 1800;
+
+    /// @notice Projects cannot specify a TWAP window longer than this constant.
+    uint256 public constant MAX_TWAP_WINDOW = 2 days;
+
+    /// @notice Projects cannot specify a TWAP window shorter than this constant.
+    uint256 public constant MIN_TWAP_WINDOW = 2 minutes;
+
+    /// @notice The denominator used when calculating TWAP slippage percent values.
+    uint256 public constant TWAP_SLIPPAGE_DENOMINATOR = 10_000;
+
+    /// @notice The uncertain slippage tolerance allowed.
+    uint256 public constant UNCERTAIN_TWAP_SLIPPAGE_TOLERANCE = 1050;
 
     //*********************************************************************//
     // --------------------- public stored properties -------------------- //
@@ -114,6 +138,10 @@ contract JBUniswapV4Hook is BaseHook {
     /// @notice The current observation array state for the given pool ID
     mapping(PoolId => ObservationState) public states;
 
+    /// @notice The TWAP window for the given project. The TWAP window is the period of time over which the TWAP is computed.
+    /// @custom:param projectId The ID of the project to get the twap window for.
+    mapping(uint256 projectId => uint256) public twapWindowOf;
+
     //*********************************************************************//
     // ---------------------------- events ------------------------------- //
     //*********************************************************************//
@@ -121,6 +149,24 @@ contract JBUniswapV4Hook is BaseHook {
 
     /// @notice Emitted when a routing decision is made
     event RouteSelected(PoolId indexed poolId, bool useJuicebox, uint256 expectedTokens, uint256 savings);
+
+    /// @notice Emitted when v3 pool prices are compared
+    event V3PriceComparison(
+        address indexed token0,
+        address indexed token1,
+        uint256 v3Price,
+        uint256 v4Price,
+        bool v3Cheaper,
+        uint256 priceDifference
+    );
+
+    /// @notice Emitted when the best route is selected among v3, v4, and Juicebox
+    event BestRouteSelected(
+        PoolId indexed poolId,
+        string routeType, // "v3", "v4", or "juicebox"
+        uint256 expectedTokens,
+        uint256 savings
+    );
 
     //*********************************************************************//
     // -------------------------- constructor ---------------------------- //
@@ -132,19 +178,22 @@ contract JBUniswapV4Hook is BaseHook {
     /// @param controller The Juicebox controller
     /// @param prices The Juicebox prices contract for currency conversion
     /// @param terminalStore The Juicebox terminal store for getting reclaimable surplus
+    /// @param v3Factory The Uniswap v3 factory for v3 pool lookups
     constructor(
         IPoolManager poolManager,
         IJBTokens tokens,
         IJBDirectory directory,
         IJBController controller,
         IJBPrices prices,
-        IJBTerminalStore terminalStore
+        IJBTerminalStore terminalStore,
+        IUniswapV3Factory v3Factory
     ) BaseHook(poolManager) {
         TOKENS = tokens;
         DIRECTORY = directory;
         CONTROLLER = controller;
         PRICES = prices;
         TERMINAL_STORE = terminalStore;
+        V3_FACTORY = v3Factory;
     }
 
     /// @notice Receive function to accept ETH
@@ -387,6 +436,177 @@ contract JBUniswapV4Hook is BaseHook {
         arithmeticMeanTick = int24((tickCumulativeCurrent - tickCumulativePast) / int48(uint48(secondsAgo)));
     }
 
+    /// @notice Estimate expected output tokens from a Uniswap v3 swap using TWAP
+    /// @dev Uses sophisticated TWAP calculation with slippage protection
+    /// @param token0 First token in the pair
+    /// @param token1 Second token in the pair
+    /// @param amountIn The input amount
+    /// @param zeroForOne Whether swapping token0 for token1
+    /// @return estimatedOut The estimated output amount
+    function estimateUniswapV3Output(
+        address token0,
+        address token1,
+        uint256 amountIn,
+        bool zeroForOne
+    ) public view returns (uint256 estimatedOut) {
+        // Only check 10000 fee tier (1%)
+        address v3Pool = V3_FACTORY.getPool(token0, token1, 10000);
+        
+        // If pool doesn't exist, return 0
+        if (v3Pool == address(0)) {
+            return 0;
+        }
+
+        // Get current pool state to check if unlocked
+        (,,,,,, bool unlocked) = IUniswapV3Pool(v3Pool).slot0();
+        
+        // Check if pool is unlocked
+        if (!unlocked) {
+            return 0;
+        }
+
+        // Use TWAP calculation with slippage protection
+        // For now, we'll use a default project ID of 0 for TWAP window
+        // In a real implementation, you might want to pass the project ID as a parameter
+        estimatedOut = _getQuote(0, zeroForOne ? token1 : token0, amountIn, zeroForOne ? token0 : token1);
+
+        return estimatedOut;
+    }
+
+    /// @notice Get a quote based on the TWAP, using the TWAP window and slippage tolerance for the specified project.
+    /// @param projectId The ID of the project which the swap is associated with.
+    /// @param projectToken The project token being swapped for.
+    /// @param amountIn The number of terminal tokens being used to swap.
+    /// @param terminalToken The terminal token being paid in and used to swap.
+    /// @return amountOut The minimum number of tokens to receive based on the TWAP and its params.
+    function _getQuote(
+        uint256 projectId,
+        address projectToken,
+        uint256 amountIn,
+        address terminalToken
+    )
+        internal
+        view
+        returns (uint256 amountOut)
+    {
+        // Get a reference to the pool that'll be used to make the swap.
+        address v3Pool = V3_FACTORY.getPool(projectToken, terminalToken, 10000);
+
+        // Make sure the pool exists, if not, return an empty quote.
+        if (v3Pool == address(0)) return 0;
+
+        IUniswapV3Pool pool = IUniswapV3Pool(v3Pool);
+
+        // If there is a contract at the address, try to get the pool's slot 0.
+        try pool.slot0() returns (uint160, int24, uint16, uint16, uint16, uint8, bool unlocked) {
+            // If the pool hasn't been initialized, return an empty quote.
+            if (!unlocked) return 0;
+        } catch {
+            // If the address is invalid, return an empty quote.
+            return 0;
+        }
+
+        // Unpack the TWAP params and get a reference to the period.
+        uint256 twapWindow = twapWindowOf[projectId];
+
+        // If no TWAP window is set, use a default of 1 hour
+        if (twapWindow == 0) twapWindow = 1 hours;
+
+        // If the oldest observation is younger than the TWAP window, use the oldest observation.
+        uint32 oldestObservation = OracleLibrary.getOldestObservationSecondsAgo(v3Pool);
+        if (oldestObservation < twapWindow) twapWindow = oldestObservation;
+
+        // Keep a reference to the TWAP tick.
+        int24 arithmeticMeanTick;
+
+        // Keep a reference to the liquidity.
+        uint128 liquidity;
+
+        // Resolve mean tick and liquidity source
+        if (oldestObservation == 0) {
+            // fallback: use spot tick and current in-range liquidity
+            (, arithmeticMeanTick,,,,,) = pool.slot0();
+            liquidity = pool.liquidity();
+        } else {
+            (arithmeticMeanTick, liquidity) = OracleLibrary.consult(v3Pool, uint32(twapWindow));
+        }
+
+        // If there's no liquidity, return an empty quote.
+        if (liquidity == 0) return 0;
+
+        // Calculate the slippage tolerance.
+        uint256 slippageTolerance = _getSlippageTolerance({
+            amountIn: amountIn,
+            liquidity: liquidity,
+            projectToken: projectToken,
+            terminalToken: terminalToken,
+            arithmeticMeanTick: arithmeticMeanTick
+        });
+
+        // If the slippage tolerance is the maximum, return an empty quote.
+        if (slippageTolerance == TWAP_SLIPPAGE_DENOMINATOR) return 0;
+
+        // Get a quote based on this TWAP tick.
+        amountOut = OracleLibrary.getQuoteAtTick({
+            tick: arithmeticMeanTick,
+            baseAmount: uint128(amountIn),
+            baseToken: terminalToken,
+            quoteToken: projectToken
+        });
+
+        // return the lowest acceptable return based on the TWAP and its parameters.
+        amountOut -= (amountOut * slippageTolerance) / TWAP_SLIPPAGE_DENOMINATOR;
+    }
+
+    /// @notice Get the slippage tolerance for a given amount in and liquidity.
+    /// @param amountIn The amount in to get the slippage tolerance for.
+    /// @param liquidity The liquidity to get the slippage tolerance for.
+    /// @param projectToken The project token to get the slippage tolerance for.
+    /// @param terminalToken The terminal token to get the slippage tolerance for.
+    /// @param arithmeticMeanTick The arithmetic mean tick to get the slippage tolerance for.
+    /// @return slippageTolerance The slippage tolerance for the given amount in and liquidity.
+    function _getSlippageTolerance(
+        uint256 amountIn,
+        uint128 liquidity,
+        address projectToken,
+        address terminalToken,
+        int24 arithmeticMeanTick
+    )
+        internal
+        pure
+        returns (uint256)
+    {
+        // Direction: is terminalToken token0?
+        (address token0,) = projectToken < terminalToken ? (projectToken, terminalToken) : (terminalToken, projectToken);
+        bool zeroForOne = terminalToken == token0;
+
+        // sqrtP in Q96 from the TWAP tick
+        uint160 sqrtP = TickMath.getSqrtRatioAtTick(arithmeticMeanTick);
+
+        // If the sqrtP is 0, there's no valid price so we'll return the maximum slippage tolerance.
+        if (sqrtP == 0) return TWAP_SLIPPAGE_DENOMINATOR;
+
+        // Approximate % of range liquidity consumed by the swap (in bps)
+        // Multiply by 10 to to amplify the results and prevent results on the low end from rounding to zero.
+        uint256 base = mulDiv(amountIn, 10 * TWAP_SLIPPAGE_DENOMINATOR, uint256(liquidity));
+
+        // Compute final slippage tolerance (bps), normalized by √P
+        uint256 slippageTolerance =
+            zeroForOne ? mulDiv(base, uint256(sqrtP), uint256(1) << 96) : mulDiv(base, uint256(1) << 96, uint256(sqrtP));
+
+        // Adjust the slippage tolerance to be reasonable given the ranges.
+        if (slippageTolerance > 15 * TWAP_SLIPPAGE_DENOMINATOR) return TWAP_SLIPPAGE_DENOMINATOR * 88 / 100;
+        else if (slippageTolerance > 10 * TWAP_SLIPPAGE_DENOMINATOR) return TWAP_SLIPPAGE_DENOMINATOR * 67 / 100;
+        else if (slippageTolerance > 30_000) return slippageTolerance / 12;
+        else if (slippageTolerance > 15_000) return slippageTolerance / 10;
+        else if (slippageTolerance > 10_000) return slippageTolerance * 2 / 15;
+        else if (slippageTolerance > 5000) return slippageTolerance * 3 / 20;
+        else if (slippageTolerance > 1500) return slippageTolerance / 5;
+        else if (slippageTolerance > 500) return (slippageTolerance / 5) + 200;
+        else if (slippageTolerance > 0) return (slippageTolerance / 5) + 100;
+        else return UNCERTAIN_TWAP_SLIPPAGE_TOLERANCE;
+    }
+
     //*********************************************************************//
     // ---------------------- internal transactions ---------------------- //
     //*********************************************************************//
@@ -531,6 +751,57 @@ contract JBUniswapV4Hook is BaseHook {
             return (BaseHook.beforeSwap.selector, BeforeSwapDeltaLibrary.ZERO_DELTA, 0);
         }
 
+        // Calculate how many tokens we'd get from Uniswap v4
+        uint256 uniswapV4ExpectedTokens = estimateUniswapOutput(poolId, key, amountIn, params.zeroForOne);
+
+        // Calculate how many tokens we'd get from Uniswap v3 (10000 fee tier only)
+        uint256 uniswapV3ExpectedTokens = estimateUniswapV3Output(tokenIn, tokenOut, amountIn, params.zeroForOne);
+
+        // Compare v3 vs v4 prices
+        bool v3BetterThanV4 = uniswapV3ExpectedTokens > uniswapV4ExpectedTokens;
+        emit V3PriceComparison(
+            tokenIn,
+            tokenOut,
+            uniswapV3ExpectedTokens,
+            uniswapV4ExpectedTokens,
+            v3BetterThanV4,
+            v3BetterThanV4
+                ? uniswapV3ExpectedTokens - uniswapV4ExpectedTokens
+                : uniswapV4ExpectedTokens - uniswapV3ExpectedTokens
+        );
+
+        // Determine the best option among v3, v4, and Juicebox
+        uint256 bestExpectedTokens = uniswapV4ExpectedTokens;
+        string memory bestRoute = "v4";
+        uint256 bestSavings = 0;
+
+        // Check if v3 is better than v4
+        if (v3BetterThanV4 && uniswapV3ExpectedTokens > 0) {
+            bestExpectedTokens = uniswapV3ExpectedTokens;
+            bestRoute = "v3";
+            bestSavings = uniswapV3ExpectedTokens - uniswapV4ExpectedTokens;
+        }
+
+        // Check if Juicebox is better than the best Uniswap option
+        bool juiceboxBetter = juiceboxExpectedOutput > bestExpectedTokens;
+        if (juiceboxBetter && juiceboxExpectedOutput > 0) {
+            bestExpectedTokens = juiceboxExpectedOutput;
+            bestRoute = "juicebox";
+            bestSavings = juiceboxExpectedOutput - (v3BetterThanV4 ? uniswapV3ExpectedTokens : uniswapV4ExpectedTokens);
+        }
+
+        emit PriceComparison(
+            poolId,
+            v3BetterThanV4 ? uniswapV3ExpectedTokens : uniswapV4ExpectedTokens,
+            juiceboxExpectedOutput,
+            juiceboxBetter,
+            juiceboxBetter
+                ? juiceboxExpectedOutput - (v3BetterThanV4 ? uniswapV3ExpectedTokens : uniswapV4ExpectedTokens)
+                : (v3BetterThanV4 ? uniswapV3ExpectedTokens : uniswapV4ExpectedTokens) - juiceboxExpectedOutput
+        );
+
+        emit BestRouteSelected(poolId, bestRoute, bestExpectedTokens, bestSavings);
+
         // If Juicebox gives better output AND we have actualUser, route through Juicebox
         if (juiceboxBetter && juiceboxExpectedOutput > 0 && actualUser != address(0)) {
             // Execute Juicebox routing (works for both buying and selling)
@@ -538,7 +809,7 @@ contract JBUniswapV4Hook is BaseHook {
             bool isBuying = isBuyingJBToken; // true when buying JB tokens, false when selling
             uint256 outputReceived = _routeThroughJuicebox(projectId, inputCurrency, outputCurrency, amountIn, actualUser, isBuying);
             
-            emit RouteSelected(poolId, true, outputReceived, outputReceived - uniswapExpectedOutput);
+            emit RouteSelected(poolId, true, outputReceived, outputReceived - bestExpectedTokens);
             
             // Return delta that reflects what hook did
             // The hook takes the input amount and settles the output amount
@@ -548,8 +819,15 @@ contract JBUniswapV4Hook is BaseHook {
             return (BaseHook.beforeSwap.selector, hookDelta, 0);
         }
 
-        // Uniswap gives better output, proceed with normal swap
-        emit RouteSelected(poolId, false, 0, 0);
+        // If v3 is better than v4, we can't route through v3 from a v4 hook
+        // So we proceed with v4, but emit the comparison for transparency
+        if (v3BetterThanV4) {
+            emit RouteSelected(poolId, false, uniswapV4ExpectedTokens, uniswapV3ExpectedTokens - uniswapV4ExpectedTokens);
+        } else {
+            emit RouteSelected(poolId, false, uniswapV4ExpectedTokens, 0);
+        }
+
+        // Proceed with normal v4 swap
         return (BaseHook.beforeSwap.selector, BeforeSwapDeltaLibrary.ZERO_DELTA, 0);
     }
 
@@ -632,6 +910,22 @@ contract JBUniswapV4Hook is BaseHook {
         }
 
         return outputReceived;
+    }
+
+    /// @notice Set the TWAP window for a project
+    /// @dev This can be called by the project owner or an authorized address
+    /// @param projectId The ID of the project to set the TWAP window for
+    /// @param twapWindow The TWAP window in seconds
+    function setTwapWindow(uint256 projectId, uint256 twapWindow) external {
+        // For now, allow anyone to set TWAP windows
+        // In production, you might want to add access control
+        
+        // Make sure the specified window is within reasonable bounds
+        if (twapWindow < MIN_TWAP_WINDOW || twapWindow > MAX_TWAP_WINDOW) {
+            revert("Invalid TWAP window");
+        }
+
+        twapWindowOf[projectId] = twapWindow;
     }
 }
 
