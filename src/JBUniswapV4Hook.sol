@@ -43,6 +43,10 @@ import {IJBTerminalStore} from "./interfaces/IJBTerminalStore.sol";
 import {JBRuleset} from "./structs/JBRuleset.sol";
 import {JBRulesetMetadata} from "./structs/JBRulesetMetadata.sol";
 
+// Import PRB Math for logarithmic functions
+import {UD60x18} from "../lib/prb-math/src/ud60x18/ValueType.sol";
+import {log2} from "../lib/prb-math/src/ud60x18/Math.sol";
+
 interface IMsgSender {
     function msgSender() external view returns (address);
 }
@@ -536,6 +540,7 @@ contract JBUniswapV4Hook is BaseHook {
         amountOut -= (amountOut * slippageTolerance) / TWAP_SLIPPAGE_DENOMINATOR;
     }
 
+
     /// @notice Get the slippage tolerance for a given amount in and liquidity.
     /// @param amountIn The amount in to get the slippage tolerance for.
     /// @param liquidity The liquidity to get the slippage tolerance for.
@@ -564,22 +569,55 @@ contract JBUniswapV4Hook is BaseHook {
         // Multiply by 10 to to amplify the results and prevent results on the low end from rounding to zero.
         uint256 base = FullMath.mulDiv(amountIn, 10 * TWAP_SLIPPAGE_DENOMINATOR, uint256(liquidity));
 
-        // Compute final slippage tolerance (bps), normalized by √P
-        uint256 slippageTolerance = zeroForOne
+        // Stage 1 — raw estimate (bps), normalized by √P
+        uint256 rawSlippageBps = zeroForOne
             ? FullMath.mulDiv(base, uint256(sqrtP), uint256(1) << 96)
             : FullMath.mulDiv(base, uint256(1) << 96, uint256(sqrtP));
 
-        // Adjust the slippage tolerance to be reasonable given the ranges.
-        if (slippageTolerance > 15 * TWAP_SLIPPAGE_DENOMINATOR) return TWAP_SLIPPAGE_DENOMINATOR * 88 / 100;
-        else if (slippageTolerance > 10 * TWAP_SLIPPAGE_DENOMINATOR) return TWAP_SLIPPAGE_DENOMINATOR * 67 / 100;
-        else if (slippageTolerance > 30_000) return slippageTolerance / 12;
-        else if (slippageTolerance > 15_000) return slippageTolerance / 10;
-        else if (slippageTolerance > 10_000) return slippageTolerance * 2 / 15;
-        else if (slippageTolerance > 5000) return slippageTolerance * 3 / 20;
-        else if (slippageTolerance > 1500) return slippageTolerance / 5;
-        else if (slippageTolerance > 500) return (slippageTolerance / 5) + 200;
-        else if (slippageTolerance > 0) return (slippageTolerance / 5) + 100;
-        else return UNCERTAIN_TWAP_SLIPPAGE_TOLERANCE;
+        // Stage 2 — policy adjustment: map raw → adjusted using log scaling and caps
+        // Higher rawSlippageBps (lower liquidity) = MORE protection. Lower rawSlippageBps = LESS protection.
+        if (rawSlippageBps == 0) return UNCERTAIN_TWAP_SLIPPAGE_TOLERANCE;
+        
+        // Cap very large values at reasonable maximum
+        uint256 maxAllowed = rawSlippageBps > 15 * TWAP_SLIPPAGE_DENOMINATOR
+            ? TWAP_SLIPPAGE_DENOMINATOR * 88 / 100
+            : (rawSlippageBps > 10 * TWAP_SLIPPAGE_DENOMINATOR
+                ? TWAP_SLIPPAGE_DENOMINATOR * 67 / 100
+                : rawSlippageBps / 5); // Default max: 20% of input
+        
+        // Logarithmic scaling: Use log2 to create smooth growth with diminishing returns
+        // Formula: adjusted grows logarithmically with rawSlippageBps
+        // Scale rawSlippageBps to UD60x18 format (multiply by 1e18 to satisfy log2 requirement of x >= UNIT)
+        uint256 scaledValue = rawSlippageBps * 1e18;
+        if (scaledValue < 1e18) scaledValue = 1e18; // Ensure >= UNIT for log2
+        
+        UD60x18 logValue = log2(UD60x18.wrap(scaledValue));
+        
+        // Unwrap logValue - it's in UD60x18 format where 1 = 1e18
+        // Divide by 1e18 to get the actual log2 value
+        uint256 logApprox = UD60x18.unwrap(logValue) / 1e18;
+        
+        // Base value: minimum slippage protection (for very small raw/high liquidity)
+        uint256 baseValue = UNCERTAIN_TWAP_SLIPPAGE_TOLERANCE;
+        
+        // Scale factor: how much the log value contributes to the result
+        // Higher scaleFactor = steeper curve (more sensitive to liquidity changes)
+        uint256 scaleFactor = 800; // Adjusts the steepness of the logarithmic curve
+        
+        // Calculate adjusted: base + logarithmic growth
+        // Higher raw (low liquidity) → larger logApprox → larger adjusted (more protection)
+        // Lower raw (high liquidity) → smaller logApprox → smaller adjusted (less protection)
+        uint256 adjustedSlippageBps = baseValue + (scaleFactor * logApprox) / 2;
+        
+        // Cap at reasonable maximum to prevent excessive slippage protection
+        if (adjustedSlippageBps > maxAllowed) adjustedSlippageBps = maxAllowed;
+        
+        // For very small raw (high liquidity), ensure minimum sensible protection
+        if (rawSlippageBps < 500 && adjustedSlippageBps < baseValue + 100) {
+            adjustedSlippageBps = baseValue + (rawSlippageBps / 5);
+        }
+        
+        return adjustedSlippageBps;
     }
 
     /// @notice Calculates time-weighted means of tick and liquidity for a given Uniswap V3 pool
