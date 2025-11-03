@@ -18,12 +18,13 @@ import {IUniswapV3Factory} from "../src/interfaces/IUniswapV3Factory.sol";
 /// @title DeployJBUniswapV4Hook
 /// @notice Script to deploy the JBUniswapV4Hook with multi-currency support
 contract DeployJBUniswapV4Hook is Script {
-    // Default test addresses (override with environment variables)
-    address constant DEFAULT_JB_TOKENS = 0x1234567890123456789012345678901234567890;
-    address constant DEFAULT_JB_DIRECTORY = 0x2345678901234567890123456789012345678901;
-    address constant DEFAULT_JB_CONTROLLER = 0x3456789012345678901234567890123456789012;
-    address constant DEFAULT_JB_PRICES = 0x4567890123456789012345678901234567890123;
-    address constant DEFAULT_JB_TERMINAL_STORE = 0x5678901234567890123456789012345678901234;
+    // Default Juicebox v5 addresses (override with environment variables)
+    // Source: https://docs.juicebox.money/dev/v5/addresses/
+    address constant DEFAULT_JB_TOKENS = 0x4d0edd347fb1fa21589c1e109b3474924be87636;
+    address constant DEFAULT_JB_DIRECTORY = 0x0061e516886a0540f63157f112c0588ee0651dcf;
+    address constant DEFAULT_JB_CONTROLLER = 0x27da30646502e2f642be5281322ae8c394f7668a;
+    address constant DEFAULT_JB_PRICES = 0x9b90e507cf6b7eb681a506b111f6f50245e614c4;
+    address constant DEFAULT_JB_TERMINAL_STORE = 0xfe33b439ec53748c87dcedacb83f05add5014744;
     address constant DEFAULT_V3_FACTORY = address(0); // v3 factory disabled for now
 
     function run() external {
