@@ -291,27 +291,27 @@ contract JBUniswapV4Hook is BaseHook {
     /// @notice Calculate expected output from selling JB tokens
     /// @param projectId The Juicebox project ID
     /// @param tokenAmount The amount of JB tokens being sold
-    /// @param outputToken The token to receive (e.g., ETH, USDC)
     /// @return expectedOutput The expected amount of output tokens received
-    function calculateExpectedOutputFromSelling(uint256 projectId, uint256 tokenAmount, address outputToken)
+    function calculateExpectedOutputFromSelling(uint256 projectId, uint256 tokenAmountIn, address outputToken)
         public
         view
         returns (uint256 expectedOutput)
     {
+        uint256 decimals;
+        try IERC20Metadata(outputToken).decimals() returns (uint8 decimals) {
+            decimals = decimals;
+        } catch {
+            decimals = 18;
+        }
+
         // Get the current reclaimable surplus for the project
         // This represents how much value can be reclaimed per token
-        uint256 surplus = TERMINAL_STORE.currentReclaimableSurplusOf(
+        return TERMINAL_STORE.currentReclaimableSurplusOf(
             projectId,
-            outputToken,
-            1, // ETH currency
-            18 // 18 decimals
+            tokenAmountIn,
+            uint32(uint160(outputToken)), // the currency id of the output token
+            decimals
         );
-
-        // Calculate expected output based on surplus per token
-        // surplus is the total reclaimable value, we need to calculate per token
-        // This is a simplified calculation - in practice, you'd need to get the total token supply
-        // and calculate the per-token value
-        expectedOutput = (surplus * tokenAmount) / 1e18;
     }
 
     /// @notice Estimate expected output tokens from a Uniswap swap using TWAP
@@ -321,7 +321,7 @@ contract JBUniswapV4Hook is BaseHook {
     /// @param amountIn The input amount
     /// @param zeroForOne Whether swapping token0 for token1
     /// @return estimatedOut The estimated output amount
-    function estimateUniswapOutput(PoolId poolId, PoolKey memory key, uint256 amountIn, bool zeroForOne)
+    function estimateUniswapV4Output(PoolId poolId, PoolKey memory key, uint256 amountIn, bool zeroForOne)
         public
         view
         returns (uint256 estimatedOut)
@@ -818,22 +818,16 @@ contract JBUniswapV4Hook is BaseHook {
 
         // Determine if we're buying or selling JB tokens
         bool isSellingJBToken = _checkAndRegisterJuiceboxToken(tokenIn, poolId) == projectId;
-        bool isBuyingJBToken = _checkAndRegisterJuiceboxToken(tokenOut, poolId) == projectId;
+        bool isBuyingJBToken = !isSellingJBToken && _checkAndRegisterJuiceboxToken(tokenOut, poolId) == projectId;
 
         uint256 juiceboxExpectedOutput;
-        uint256 uniswapExpectedOutput;
-        bool juiceboxBetter = false;
 
         if (isBuyingJBToken) {
             // Buying JB tokens: compare Juicebox vs Uniswap for getting JB tokens
             juiceboxExpectedOutput = calculateExpectedTokensWithCurrency(projectId, tokenIn, amountIn);
-            uniswapExpectedOutput = estimateUniswapOutput(poolId, key, amountIn, params.zeroForOne);
-            juiceboxBetter = juiceboxExpectedOutput > uniswapExpectedOutput;
         } else if (isSellingJBToken) {
             // Selling JB tokens: compare Juicebox vs Uniswap for getting output tokens
-            juiceboxExpectedOutput = calculateExpectedOutputFromSelling(projectId, amountIn, tokenOut);
-            uniswapExpectedOutput = estimateUniswapOutput(poolId, key, amountIn, params.zeroForOne);
-            juiceboxBetter = juiceboxExpectedOutput > uniswapExpectedOutput;
+            juiceboxExpectedOutput = calculateExpectedOutputFromSelling(projectId, tokenIn, tokenOut);
         } else {
             // No JB token involved, proceed with normal Uniswap swap
             emit RouteSelected(poolId, false, 0, 0);
@@ -841,7 +835,7 @@ contract JBUniswapV4Hook is BaseHook {
         }
 
         // Calculate how many tokens we'd get from Uniswap v4
-        uint256 uniswapV4ExpectedTokens = estimateUniswapOutput(poolId, key, amountIn, params.zeroForOne);
+        uint256 uniswapV4ExpectedTokens = estimateUniswapV4Output(poolId, key, amountIn, params.zeroForOne);
 
         // Calculate how many tokens we'd get from Uniswap v3 (10000 fee tier only)
         uint256 uniswapV3ExpectedTokens;
@@ -904,17 +898,22 @@ contract JBUniswapV4Hook is BaseHook {
             return (BaseHook.beforeSwap.selector, hookDelta, 0);
         }
 
-        // If v3 is better than v4, we can't route through v3 from a v4 hook
-        // So we proceed with v4, but emit the comparison for transparency
-        if (v3BetterThanV4) {
-            emit RouteSelected(
-                poolId, false, uniswapV4ExpectedTokens, uniswapV3ExpectedTokens - uniswapV4ExpectedTokens
-            );
-        } else {
-            emit RouteSelected(poolId, false, uniswapV4ExpectedTokens, 0);
+        // If v3 is better than v4, execute the v3 swap
+        if (v3BetterThanV4 && uniswapV3ExpectedTokens > 0) {
+            // Execute v3 swap
+            uint256 outputReceived = _routeThroughV3(tokenIn, tokenOut, amountIn, params.zeroForOne);
+
+            emit RouteSelected(poolId, false, outputReceived, outputReceived - uniswapV4ExpectedTokens);
+
+            // Return delta that reflects what hook did
+            // The hook takes the input amount and settles the output amount
+            BeforeSwapDelta hookDelta = toBeforeSwapDelta(int128(uint128(amountIn)), -int128(uint128(outputReceived)));
+
+            return (BaseHook.beforeSwap.selector, hookDelta, 0);
         }
 
         // Proceed with normal v4 swap
+        emit RouteSelected(poolId, false, uniswapV4ExpectedTokens, 0);
         return (BaseHook.beforeSwap.selector, BeforeSwapDeltaLibrary.ZERO_DELTA, 0);
     }
 
@@ -938,6 +937,10 @@ contract JBUniswapV4Hook is BaseHook {
         address tokenIn = Currency.unwrap(inputCurrency);
         address tokenOut = Currency.unwrap(outputCurrency);
 
+        // Convert Uniswap native ETH to Juicebox native token
+        if (tokenIn == UNISWAP_NATIVE_ETH) tokenIn = JB_NATIVE_TOKEN;
+        if (tokenOut == UNISWAP_NATIVE_ETH) tokenOut = JB_NATIVE_TOKEN;
+
         // Get the primary terminal for the project
         // For buying: terminal handles tokenIn (payment token)
         // For selling: terminal handles tokenIn (JB token being redeemed)
@@ -946,12 +949,11 @@ contract JBUniswapV4Hook is BaseHook {
         // Take input from PoolManager (pre-deposited by JuiceboxSwapRouter)
         poolManager.take(inputCurrency, address(this), amountIn);
 
-        // Approve the terminal to spend the tokens if needed
-        if (!inputCurrency.isAddressZero()) {
-            IERC20(tokenIn).safeIncreaseAllowance(address(terminal), amountIn);
-        }
-
         if (isBuying) {
+            // Approve the terminal to spend the tokens if needed
+            if (!inputCurrency.isAddressZero()) {
+                IERC20(tokenIn).safeIncreaseAllowance(address(terminal), amountIn);
+            }
             // Buying JB tokens: Pay to Juicebox and receive JB tokens
             uint256 payValue = inputCurrency.isAddressZero() ? amountIn : 0;
             outputReceived = IJBMultiTerminal(terminal)
@@ -967,26 +969,18 @@ contract JBUniswapV4Hook is BaseHook {
                 bytes("") // Empty metadata
             );
         } else {
-            // Selling JB tokens: Redeem JB tokens and receive output currency
-            // Calculate expected output based on surplus
-            outputReceived = calculateExpectedOutputFromSelling(projectId, amountIn, tokenOut);
-
-            // For testing purposes, we'll simulate the redemption by calling the terminal
-            // In practice, you'd need to call the appropriate Juicebox redemption function
-            if (outputReceived > 0) {
-                // Call the terminal's redemption function to get the output tokens
-                // This simulates the redemption process
-                outputReceived = IJBMultiTerminal(terminal)
-                    .redeemTokensOf(
-                        projectId,
-                        tokenOut, // The output token we want to receive
-                        amountIn, // Amount of JB tokens to redeem
-                        address(this), // Beneficiary (hook)
-                        0, // No minimum tokens required
-                        "", // Empty memo
-                        bytes("") // Empty metadata
-                    );
-            }
+            // Call the terminal's redemption function to get the output tokens
+            // This simulates the redemption process
+            outputReceived = IJBMultiTerminal(terminal)
+                .redeemTokensOf(
+                    projectId,
+                    tokenOut, // The output token we want to receive
+                    amountIn, // Amount of JB tokens to redeem
+                    address(this), // Beneficiary (hook)
+                    0, // No minimum tokens required
+                    "", // Empty memo
+                    bytes("") // Empty metadata
+                );
         }
 
         // Settle output back to PoolManager
@@ -999,6 +993,84 @@ contract JBUniswapV4Hook is BaseHook {
         }
 
         return outputReceived;
+    }
+
+    /// @notice Routes a swap through Uniswap v3 instead of v4
+    /// @dev Takes input tokens from PoolManager, executes v3 swap, settles output tokens back
+    /// @param tokenIn The input token address
+    /// @param tokenOut The output token address
+    /// @param amountIn The amount of input tokens
+    /// @param zeroForOne Whether swapping token0 for token1
+    /// @return outputReceived The amount of output tokens received
+    function _routeThroughV3(
+        address tokenIn,
+        address tokenOut,
+        uint256 amountIn,
+        bool zeroForOne
+    ) internal returns (uint256 outputReceived) {
+        // Get the v3 pool (10000 fee tier)
+        address v3Pool = V3_FACTORY.getPool(tokenIn, tokenOut, 10000);
+        require(v3Pool != address(0), "V3 pool not found");
+
+        // Check pool is unlocked
+        (,,,,,, bool unlocked) = IUniswapV3Pool(v3Pool).slot0();
+        require(unlocked, "V3 pool locked");
+
+        // Take input from PoolManager
+        Currency inputCurrency = Currency.wrap(tokenIn);
+        Currency outputCurrency = Currency.wrap(tokenOut);
+        poolManager.take(inputCurrency, address(this), amountIn);
+
+        // Execute v3 swap
+        // v3 swap parameters: recipient, zeroForOne, amountSpecified, sqrtPriceLimitX96, data
+        // The swap will call uniswapV3SwapCallback during execution
+        (int256 amount0Delta, int256 amount1Delta) = IUniswapV3Pool(v3Pool).swap(
+            address(this), // recipient
+            zeroForOne,
+            int256(amountIn), // amountSpecified (positive for exact input)
+            0, // sqrtPriceLimitX96 (0 = no limit)
+            "" // data
+        );
+
+        // Calculate output received (one of the deltas will be negative, the other positive)
+        if (zeroForOne) {
+            // Swapping token0 for token1: amount0Delta is positive (input), amount1Delta is negative (output)
+            outputReceived = uint256(-amount1Delta);
+        } else {
+            // Swapping token1 for token0: amount1Delta is positive (input), amount0Delta is negative (output)
+            outputReceived = uint256(-amount0Delta);
+        }
+
+        // Settle output back to PoolManager
+        if (!outputCurrency.isAddressZero()) {
+            poolManager.sync(outputCurrency);
+            IERC20(tokenOut).safeTransfer(address(poolManager), outputReceived);
+            poolManager.settle();
+        } else {
+            // Output is native ETH - settle with value
+            poolManager.settle{value: outputReceived}();
+        }
+
+        return outputReceived;
+    }
+
+    /// @notice Callback for Uniswap v3 swaps
+    /// @dev Called by the v3 pool during swap execution to request payment
+    /// @param amount0Delta The amount of token0 that must be paid
+    /// @param amount1Delta The amount of token1 that must be paid
+    /// @param data Additional data (unused)
+    function uniswapV3SwapCallback(int256 amount0Delta, int256 amount1Delta, bytes calldata data) external {
+        // Only one delta will be positive (the one we need to pay)
+        // The other will be negative (the one we receive)
+        uint256 amountToPay = amount0Delta > 0 ? uint256(amount0Delta) : uint256(amount1Delta);
+        
+        // Determine which token to pay
+        address tokenToPay = amount0Delta > 0 
+            ? IUniswapV3Pool(msg.sender).token0() 
+            : IUniswapV3Pool(msg.sender).token1();
+
+        // Transfer the required amount to the pool
+        IERC20(tokenToPay).safeTransfer(msg.sender, amountToPay);
     }
 }
 

@@ -86,6 +86,12 @@ interface IUniswapV3Pool {
     /// @dev This value has no relationship to the total liquidity across all ticks
     function liquidity() external view returns (uint128);
 
+    /// @notice The first token of the pool
+    function token0() external view returns (address);
+
+    /// @notice The second token of the pool
+    function token1() external view returns (address);
+
     /// @notice Returns the information about a position by the position's key
     /// @param key The position's key is a hash of a preimage composed by the owner, tickLower and tickUpper
     /// @return _liquidity The amount of liquidity in the position
