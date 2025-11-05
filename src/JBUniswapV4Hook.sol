@@ -92,9 +92,6 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
     /// @notice The Juicebox directory for terminal lookup
     IJBDirectory public immutable DIRECTORY;
 
-    /// @notice The Juicebox controller for ruleset information
-    IJBController public immutable CONTROLLER;
-
     /// @notice The Juicebox prices contract for currency conversion
     IJBPrices public immutable PRICES;
 
@@ -167,7 +164,6 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
     /// @param poolManager The Uniswap v4 pool manager
     /// @param tokens The Juicebox tokens contract
     /// @param directory The Juicebox directory
-    /// @param controller The Juicebox controller
     /// @param prices The Juicebox prices contract for currency conversion
     /// @param terminalStore The Juicebox terminal store for getting reclaimable surplus
     /// @param v3Factory The Uniswap v3 factory for v3 pool lookups
@@ -175,14 +171,12 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
         IPoolManager poolManager,
         IJBTokens tokens,
         IJBDirectory directory,
-        IJBController controller,
         IJBPrices prices,
         IJBTerminalStore terminalStore,
         IUniswapV3Factory v3Factory
     ) BaseHook(poolManager) {
         TOKENS = tokens;
         DIRECTORY = directory;
-        CONTROLLER = controller;
         PRICES = prices;
         TERMINAL_STORE = terminalStore;
         V3_FACTORY = v3Factory;
@@ -230,7 +224,10 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
         uint256 tokensPerBaseCurrency;
         // Get the currency Id for the `weight`.
         uint256 baseCurrency;
-        try CONTROLLER.currentRulesetOf(
+
+        IJBController controller = DIRECTORY.controllerOf(projectId);
+
+        try controller.currentRulesetOf(
             projectId
         ) returns (JBRuleset memory ruleset, JBRulesetMetadata memory metadata) {
             tokensPerBaseCurrency = ruleset.weight;
@@ -308,12 +305,14 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
             decimals = 18;
         }
 
+        if (outputToken == UNISWAP_NATIVE_ETH) outputToken = JB_NATIVE_TOKEN;
+
         // Get the current reclaimable surplus for the project
         // This represents how much value can be reclaimed for the given token amount
         return TERMINAL_STORE.currentReclaimableSurplusOf(
             projectId,
             tokenAmountIn,
-            uint32(uint160(outputToken)), // the currency id of the output token
+            uint32(uint160(normalizedOutputToken)), // the currency id of the output token
             decimals
         );
     }
@@ -831,19 +830,13 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
         bool isBuyingJBToken = _checkAndRegisterJuiceboxToken(tokenOut, poolId) == projectId;
 
         uint256 juiceboxExpectedOutput;
-        uint256 uniswapExpectedOutput;
-        bool juiceboxBetter = false;
 
         if (isBuyingJBToken) {
             // Buying JB tokens: compare Juicebox vs Uniswap for getting JB tokens
             juiceboxExpectedOutput = calculateExpectedTokensWithCurrency(projectId, tokenIn, amountIn);
-            uniswapExpectedOutput = estimateUniswapOutput(poolId, key, amountIn, params.zeroForOne);
-            juiceboxBetter = juiceboxExpectedOutput > uniswapExpectedOutput;
         } else if (isSellingJBToken) {
             // Selling JB tokens: compare Juicebox vs Uniswap for getting output tokens
             juiceboxExpectedOutput = calculateExpectedOutputFromSelling(projectId, amountIn, tokenOut);
-            uniswapExpectedOutput = estimateUniswapOutput(poolId, key, amountIn, params.zeroForOne);
-            juiceboxBetter = juiceboxExpectedOutput > uniswapExpectedOutput;
         } else {
             // No JB token involved, proceed with normal Uniswap swap
             emit RouteSelected(poolId, false, 0, 0);
@@ -957,6 +950,9 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
     ) internal returns (uint256 outputReceived) {
         address tokenIn = Currency.unwrap(inputCurrency);
         address tokenOut = Currency.unwrap(outputCurrency);
+
+        if (tokenIn == UNISWAP_NATIVE_ETH) tokenIn = JB_NATIVE_TOKEN;
+        if (tokenOut == UNISWAP_NATIVE_ETH) tokenOut = JB_NATIVE_TOKEN;
 
         // Get the primary terminal for the project
         // For buying: terminal handles tokenIn (payment token)
