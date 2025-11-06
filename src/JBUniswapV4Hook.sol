@@ -37,6 +37,7 @@ import {IJBToken} from "@bananapus/core-v5/interfaces/IJBToken.sol";
 import {IJBDirectory} from "@bananapus/core-v5/interfaces/IJBDirectory.sol";
 import {IJBMultiTerminal} from "@bananapus/core-v5/interfaces/IJBMultiTerminal.sol";
 import {IJBController} from "@bananapus/core-v5/interfaces/IJBController.sol";
+import {IJBTerminal} from "@bananapus/core-v5/interfaces/IJBTerminal.sol";
 
 import {IJBPrices} from "@bananapus/core-v5/interfaces/IJBPrices.sol";
 import {IJBTerminalStore} from "@bananapus/core-v5/interfaces/IJBTerminalStore.sol";
@@ -262,13 +263,19 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
         }
 
         // Get the price: how much baseCurrency per 1 unit of payment token
-        // pricePerUnitOf returns the price of unitCurrency (paymentToken) in terms of pricingCurrency (baseCurrency)
+        // pricePerUnitOf returns the pricingCurrency cost for one unit of unitCurrency
+        // So: pricePerUnitOf(projectId, baseCurrency, paymentCurrencyId, 18) returns baseCurrency cost for 1 unit of paymentCurrencyId
         // The result is scaled by 10^decimals (18 in this case)
         uint256 baseCurrencyPerPaymentToken;
-        try PRICES.pricePerUnitOf(projectId, paymentCurrencyId, baseCurrency, 18) returns (uint256 price) {
-            baseCurrencyPerPaymentToken = price;
-        } catch {
-            return 0;
+        // If payment currency is the same as base currency, use 1:1 conversion
+        if (paymentCurrencyId == baseCurrency) {
+            baseCurrencyPerPaymentToken = 1e18;
+        } else {
+            try PRICES.pricePerUnitOf(projectId, baseCurrency, paymentCurrencyId, 18) returns (uint256 price) {
+                baseCurrencyPerPaymentToken = price;
+            } catch {
+                return 0;
+            }
         }
 
         // Calculate tokens based on the payment amount and weight
@@ -961,7 +968,7 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
         // Get the primary terminal for the project
         // For buying: terminal handles tokenIn (payment token)
         // For selling: terminal handles tokenIn (JB token being redeemed)
-        address terminal = DIRECTORY.primaryTerminalOf(projectId, tokenIn);
+        IJBTerminal terminal = IJBTerminal(DIRECTORY.primaryTerminalOf(projectId, tokenIn));
 
         // Take input from PoolManager (pre-deposited by JuiceboxSwapRouter)
         poolManager.take(inputCurrency, address(this), amountIn);
@@ -974,7 +981,7 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
         if (isBuying) {
             // Buying JB tokens: Pay to Juicebox and receive JB tokens
             uint256 payValue = inputCurrency.isAddressZero() ? amountIn : 0;
-            outputReceived = IJBMultiTerminal(terminal)
+            outputReceived = IJBMultiTerminal(address(terminal))
             .pay{
                 value: payValue
             }(
@@ -987,16 +994,16 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
                 bytes("") // Empty metadata
             );
         } else {
-            // Selling JB tokens: Redeem JB tokens and receive output currency
-            // Call the terminal's redemption function to get the output tokens
-            outputReceived = IJBMultiTerminal(terminal)
-                .redeemTokensOf(
+            // Selling JB tokens: Cash out JB tokens and receive output currency
+            // Call the terminal's cash out function to get the output tokens
+            outputReceived = IJBMultiTerminal(address(terminal))
+                .cashOutTokensOf(
+                    address(this), // holder (hook owns the JB tokens)
                     projectId,
-                    tokenOut, // The output token we want to receive
-                    amountIn, // Amount of JB tokens to redeem
-                    address(this), // Beneficiary (hook)
-                    0, // No minimum tokens required
-                    "", // Empty memo
+                    amountIn, // cashOutCount: Amount of JB tokens to cash out
+                    tokenOut, // tokenToReclaim: The output token we want to receive
+                    0, // minTokensReclaimed: No minimum tokens required
+                    payable(address(this)), // beneficiary (hook)
                     bytes("") // Empty metadata
                 );
         }

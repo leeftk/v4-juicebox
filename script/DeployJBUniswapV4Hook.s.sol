@@ -23,33 +23,34 @@ contract DeployJBUniswapV4Hook is Script {
     address constant DEFAULT_JB_DIRECTORY = 0x0061e516886a0540f63157f112c0588ee0651dcf;
     address constant DEFAULT_JB_PRICES = 0x9b90e507cf6b7eb681a506b111f6f50245e614c4;
     address constant DEFAULT_JB_TERMINAL_STORE = 0xfe33b439ec53748c87dcedacb83f05add5014744;
-    address factory = address(0); 
-
-    if (block.chainid == 1) {
-        factory = 0x1F98431c8aD98523631AE4a59f267346ea31F984;
-        // Ethereum Sepolia
-    } else if (block.chainid == 11_155_111) {
-        factory = 0x0227628f3F023bb0B980b67D528571c95c6DaC1c;
-        // Optimism Mainnet
-    } else if (block.chainid == 10) {
-        factory = 0x1F98431c8aD98523631AE4a59f267346ea31F984;
-        // Base Mainnet
-    } else if (block.chainid == 8453) {
-        factory = 0x33128a8fC17869897dcE68Ed026d694621f6FDfD;
-        // Optimism Sepolia
-    } else if (block.chainid == 11_155_420) {
-        factory = 0x4752ba5DBc23f44D87826276BF6Fd6b1C372aD24;
-        // BASE Sepolia
-    } else if (block.chainid == 84_532) {
-        factory = 0x4752ba5DBc23f44D87826276BF6Fd6b1C372aD24;
-        // Arbitrum Mainnet
-    } else if (block.chainid == 42_161) {
-        factory = 0x1F98431c8aD98523631AE4a59f267346ea31F984;
-        // Arbitrum Sepolia
-    } else if (block.chainid == 421_614) {
-        factory = 0x248AB79Bbb9bC29bB72f7Cd42F17e054Fc40188e;
-    } else {
-        revert("Invalid RPC / no juice contracts deployed on this network");
+    
+    function getFactory() internal view returns (address) {
+        if (block.chainid == 1) {
+            return 0x1F98431c8aD98523631AE4a59f267346ea31F984;
+            // Ethereum Mainnet
+        } else if (block.chainid == 11_155_111) {
+            return 0x0227628f3F023bb0B980b67D528571c95c6DaC1c;
+            // Optimism Mainnet
+        } else if (block.chainid == 10) {
+            return 0x1F98431c8aD98523631AE4a59f267346ea31F984;
+            // Optimism Mainnet
+        } else if (block.chainid == 8453) {
+            return 0x33128a8fC17869897dcE68Ed026d694621f6FDfD;
+            // Base Mainnet
+        } else if (block.chainid == 11_155_420) {
+            return 0x4752ba5DBc23f44D87826276BF6Fd6b1C372aD24;
+            // Optimism Sepolia
+        } else if (block.chainid == 84_532) {
+            return 0x4752ba5DBc23f44D87826276BF6Fd6b1C372aD24;
+            // BASE Sepolia
+        } else if (block.chainid == 42_161) {
+            return 0x1F98431c8aD98523631AE4a59f267346ea31F984;
+            // Arbitrum Mainnet
+        } else if (block.chainid == 421_614) {
+            return 0x248AB79Bbb9bC29bB72f7Cd42F17e054Fc40188e;
+        } else {
+            revert("Invalid RPC / no juice contracts deployed on this network");
+        }
     }
 
     function run() external {
@@ -62,7 +63,7 @@ contract DeployJBUniswapV4Hook is Script {
         address jbDirectory = vm.envOr("JB_DIRECTORY", DEFAULT_JB_DIRECTORY);
         address jbPrices = vm.envOr("JB_PRICES", DEFAULT_JB_PRICES);
         address jbTerminalStore = vm.envOr("JB_TERMINAL_STORE", DEFAULT_JB_TERMINAL_STORE);
-        address v3Factory = vm.envOr("V3_FACTORY", factory);
+        address v3Factory = vm.envOr("V3_FACTORY", getFactory());
 
         uint256 deployerPrivateKey = vm.envUint("PRIVATE_KEY");
         address deployer = vm.addr(deployerPrivateKey);

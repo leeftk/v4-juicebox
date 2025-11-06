@@ -1,10 +1,15 @@
 [profile.default]
 evm_version = "cancun"
 ffi = true
-fs_permissions = [{access = "read-write", path = ".forge-snapshots/"}]
+fs_permissions = [
+    {access = "read-write", path = ".forge-snapshots/"},
+    {access = "read", path = "../nana/"}
+]
 libs = ["lib"]
 out = "out"
 # solc_version = "0.8.26"  # Commented out to allow auto-detection of versions from pragma statements
 src = "src"
-via_ir = false
+via_ir = true
+optimizer = true
+optimizer_runs = 200
 

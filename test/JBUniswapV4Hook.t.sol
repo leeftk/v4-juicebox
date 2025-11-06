@@ -34,8 +34,9 @@ import {
     IJBTerminalStore
 } from "../src/JBUniswapV4Hook.sol";
 import {IUniswapV3Factory} from "../src/interfaces/IUniswapV3Factory.sol";
-import {JBRuleset} from "../src/structs/JBRuleset.sol";
-import {JBRulesetMetadata} from "../src/structs/JBRulesetMetadata.sol";
+import {JBRuleset} from "@bananapus/core-v5/structs/JBRuleset.sol";
+import {JBRulesetMetadata} from "@bananapus/core-v5/structs/JBRulesetMetadata.sol";
+import {IJBRulesetApprovalHook} from "@bananapus/core-v5/interfaces/IJBRulesetApprovalHook.sol";
 import {HookMiner} from "@uniswap/v4-periphery/src/utils/HookMiner.sol";
 
 // Mock Juicebox contracts for testing
@@ -191,17 +192,17 @@ contract MockJBController {
             cycleNumber: 1,
             id: 1,
             basedOnId: 0,
-            start: block.timestamp,
+            start: uint48(block.timestamp),
             duration: 0,
-            weight: weights[projectId],
-            decayPercent: 0,
-            approvalHook: address(0),
+            weight: uint112(weights[projectId]),
+            weightCutPercent: 0,
+            approvalHook: IJBRulesetApprovalHook(address(0)),
             metadata: 0
         });
 
         metadata = JBRulesetMetadata({
             reservedPercent: 0,
-            redemptionRate: 0,
+            cashOutTaxRate: 0,
             baseCurrency: 1,
             pausePay: false,
             pauseCreditTransfers: false,
@@ -212,11 +213,11 @@ contract MockJBController {
             allowSetController: false,
             allowAddAccountingContext: false,
             allowAddPriceFeed: false,
-            allowCrosschainSuckerExtension: false,
+            ownerMustSendPayouts: false,
             holdFees: false,
-            useTotalSurplusForRedemptions: false,
+            useTotalSurplusForCashOuts: false,
             useDataHookForPay: false,
-            useDataHookForRedeem: false,
+            useDataHookForCashOut: false,
             dataHook: address(0),
             metadata: 0
         });
