@@ -32,17 +32,17 @@ import {IUniswapV3SwapCallback} from "../lib/v3-core/contracts/interfaces/callba
 import {Oracle} from "./libraries/Oracle.sol";
 
 // Import Juicebox protocol interfaces
-import {IJBTokens} from "./interfaces/IJBTokens.sol";
-import {IJBToken} from "./interfaces/IJBToken.sol";
-import {IJBDirectory} from "./interfaces/IJBDirectory.sol";
-import {IJBMultiTerminal} from "./interfaces/IJBMultiTerminal.sol";
-import {IJBController} from "./interfaces/IJBController.sol";
+import {IJBTokens} from "@bananapus/core-v5/interfaces/IJBTokens.sol";
+import {IJBToken} from "@bananapus/core-v5/interfaces/IJBToken.sol";
+import {IJBDirectory} from "@bananapus/core-v5/interfaces/IJBDirectory.sol";
+import {IJBMultiTerminal} from "@bananapus/core-v5/interfaces/IJBMultiTerminal.sol";
+import {IJBController} from "@bananapus/core-v5/interfaces/IJBController.sol";
 
-import {IJBPrices} from "./interfaces/IJBPrices.sol";
-import {IJBTerminalStore} from "./interfaces/IJBTerminalStore.sol";
+import {IJBPrices} from "@bananapus/core-v5/interfaces/IJBPrices.sol";
+import {IJBTerminalStore} from "@bananapus/core-v5/interfaces/IJBTerminalStore.sol";
 
-import {JBRuleset} from "./structs/JBRuleset.sol";
-import {JBRulesetMetadata} from "./structs/JBRulesetMetadata.sol";
+import {JBRuleset} from "@bananapus/core-v5/structs/JBRuleset.sol";
+import {JBRulesetMetadata} from "@bananapus/core-v5/structs/JBRulesetMetadata.sol";
 
 // Import PRB Math for logarithmic functions
 import {UD60x18} from "../lib/prb-math/src/ud60x18/ValueType.sol";

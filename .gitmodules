@@ -7,3 +7,6 @@
 [submodule "lib/hookmate"]
 	path = lib/hookmate
 	url = https://github.com/akshatmittal/hookmate
+[submodule "lib/nana-core-v5"]
+	path = lib/nana-core-v5
+	url = https://github.com/bananapus/nana-core-v5
