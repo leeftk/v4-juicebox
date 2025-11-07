@@ -1081,7 +1081,8 @@ contract JuiceboxHookTest is Test {
     /// And the calculation should be correct
     function testFuzz_TokenWeightCalculation(uint256 weight, uint256 ethAmount) public {
         // Bound to prevent overflow
-        weight = bound(weight, 1e18, type(uint128).max);
+        // Note: Mock controller stores weight as uint112, so we must bound to uint112.max
+        weight = bound(weight, 1e18, type(uint112).max);
         ethAmount = bound(ethAmount, 1, type(uint128).max);
 
         // Avoid overflow in calculation

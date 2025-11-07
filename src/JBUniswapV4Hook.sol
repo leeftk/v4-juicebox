@@ -268,9 +268,18 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
         // The result is scaled by 10^decimals (18 in this case)
         uint256 baseCurrencyPerPaymentToken;
         // If payment currency is the same as base currency, use 1:1 conversion
+        // Special case: JB_NATIVE_TOKEN (0xEEEe) represents ETH, same as baseCurrency = 1
+        // Since paymentToken is already converted to JB_NATIVE_TOKEN if it was address(0),
+        // we need to check if both represent ETH (paymentToken == JB_NATIVE_TOKEN && baseCurrency == 1)
+        // OR if the currency IDs match (paymentCurrencyId == baseCurrency)
         if (paymentCurrencyId == baseCurrency) {
+            // Same currency IDs - direct match
+            baseCurrencyPerPaymentToken = 1e18;
+        } else if (paymentToken == JB_NATIVE_TOKEN && baseCurrency == 1) {
+            // Both represent ETH but have different IDs (0xeeee vs 1)
             baseCurrencyPerPaymentToken = 1e18;
         } else {
+            // Different currencies - need price conversion
             try PRICES.pricePerUnitOf(projectId, baseCurrency, paymentCurrencyId, 18) returns (uint256 price) {
                 baseCurrencyPerPaymentToken = price;
             } catch {
@@ -284,17 +293,27 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
         // Use FullMath for safe multiplication to prevent overflow
 
         if (paymentTokenDecimals == 18) {
-            // For 18-decimal tokens, use FullMath to safely multiply three numbers
-            // First multiply tokensPerBaseCurrency and paymentAmount
-            uint256 intermediate = FullMath.mulDiv(tokensPerBaseCurrency, paymentAmount, 1e18);
-            // Then multiply by baseCurrencyPerPaymentToken and divide by 1e18
-            expectedTokens = FullMath.mulDiv(intermediate, baseCurrencyPerPaymentToken, 1e18);
+            // If baseCurrencyPerPaymentToken is 1e18 (1:1 conversion), simplify the calculation
+            if (baseCurrencyPerPaymentToken == 1e18) {
+                // Direct calculation: (weight * paymentAmount) / 1e18
+                expectedTokens = FullMath.mulDiv(tokensPerBaseCurrency, paymentAmount, 1e18);
+            } else {
+                // First multiply tokensPerBaseCurrency and paymentAmount
+                uint256 intermediate = FullMath.mulDiv(tokensPerBaseCurrency, paymentAmount, 1e18);
+                // Then multiply by baseCurrencyPerPaymentToken and divide by 1e18
+                expectedTokens = FullMath.mulDiv(intermediate, baseCurrencyPerPaymentToken, 1e18);
+            }
         } else {
             // Convert paymentAmount to 18 decimals first
             uint256 paymentAmount18 = (paymentAmount * 1e18) / (10 ** paymentTokenDecimals);
             // Use FullMath for safe multiplication
-            uint256 intermediate = FullMath.mulDiv(tokensPerBaseCurrency, paymentAmount18, 1e18);
-            expectedTokens = FullMath.mulDiv(intermediate, baseCurrencyPerPaymentToken, 1e18);
+            if (baseCurrencyPerPaymentToken == 1e18) {
+                // Direct calculation when conversion is 1:1
+                expectedTokens = FullMath.mulDiv(tokensPerBaseCurrency, paymentAmount18, 1e18);
+            } else {
+                uint256 intermediate = FullMath.mulDiv(tokensPerBaseCurrency, paymentAmount18, 1e18);
+                expectedTokens = FullMath.mulDiv(intermediate, baseCurrencyPerPaymentToken, 1e18);
+            }
         }
     }
 
