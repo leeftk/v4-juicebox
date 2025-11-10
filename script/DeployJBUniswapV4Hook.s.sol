@@ -8,21 +8,22 @@ import {Hooks} from "@uniswap/v4-core/src/libraries/Hooks.sol";
 import {HookMiner} from "@uniswap/v4-periphery/src/utils/HookMiner.sol";
 
 import {JBUniswapV4Hook} from "../src/JBUniswapV4Hook.sol";
-import {IJBTokens} from "../src/interfaces/IJBTokens.sol";
-import {IJBDirectory} from "../src/interfaces/IJBDirectory.sol";
-import {IJBController} from "../src/interfaces/IJBController.sol";
-import {IJBPrices} from "../src/interfaces/IJBPrices.sol";
-import {IJBTerminalStore} from "../src/interfaces/IJBTerminalStore.sol";
+import {IJBTokens} from "@bananapus/core-v5/interfaces/IJBTokens.sol";
+import {IJBDirectory} from "@bananapus/core-v5/interfaces/IJBDirectory.sol";
+import {IJBController} from "@bananapus/core-v5/interfaces/IJBController.sol";
+import {IJBPrices} from "@bananapus/core-v5/interfaces/IJBPrices.sol";
+import {IJBTerminalStore} from "@bananapus/core-v5/interfaces/IJBTerminalStore.sol";
 import {IUniswapV3Factory} from "../src/interfaces/IUniswapV3Factory.sol";
 
 /// @title DeployJBUniswapV4Hook
 /// @notice Script to deploy the JBUniswapV4Hook with multi-currency support
 contract DeployJBUniswapV4Hook is Script {
     // Default test addresses (override with environment variables)
-    address constant DEFAULT_JB_TOKENS = 0x4d0edd347fb1fa21589c1e109b3474924be87636;
-    address constant DEFAULT_JB_DIRECTORY = 0x0061e516886a0540f63157f112c0588ee0651dcf;
-    address constant DEFAULT_JB_PRICES = 0x9b90e507cf6b7eb681a506b111f6f50245e614c4;
-    address constant DEFAULT_JB_TERMINAL_STORE = 0xfe33b439ec53748c87dcedacb83f05add5014744;
+    address constant DEFAULT_JB_TOKENS = 0x4d0Edd347FB1fA21589C1E109B3474924BE87636;
+    address constant DEFAULT_JB_DIRECTORY = 0x0061E516886A0540F63157f112C0588eE0651dCF;
+    address constant DEFAULT_JB_CONTROLLER = 0x84dCD186F4c67798ed84e07dD01D1e7af8Ce4c43;
+    address constant DEFAULT_JB_PRICES = 0x9b90E507cF6B7eB681A506b111f6f50245e614c4;
+    address constant DEFAULT_JB_TERMINAL_STORE = 0xfE33B439Ec53748C87DcEDACb83f05aDd5014744;
     
     function getFactory() internal view returns (address) {
         if (block.chainid == 1) {
@@ -61,6 +62,7 @@ contract DeployJBUniswapV4Hook is Script {
         // Get Juicebox addresses from environment or use defaults
         address jbTokens = vm.envOr("JB_TOKENS", DEFAULT_JB_TOKENS);
         address jbDirectory = vm.envOr("JB_DIRECTORY", DEFAULT_JB_DIRECTORY);
+        address jbController = vm.envOr("JB_CONTROLLER", DEFAULT_JB_CONTROLLER);
         address jbPrices = vm.envOr("JB_PRICES", DEFAULT_JB_PRICES);
         address jbTerminalStore = vm.envOr("JB_TERMINAL_STORE", DEFAULT_JB_TERMINAL_STORE);
         address v3Factory = vm.envOr("V3_FACTORY", getFactory());
@@ -73,6 +75,7 @@ contract DeployJBUniswapV4Hook is Script {
         console2.log("  Pool Manager:", poolManager);
         console2.log("  JB Tokens:", jbTokens);
         console2.log("  JB Directory:", jbDirectory);
+        console2.log("  JB Controller:", jbController);
         console2.log("  JB Prices:", jbPrices);
         console2.log("  JB Terminal Store:", jbTerminalStore);
 
@@ -104,6 +107,7 @@ contract DeployJBUniswapV4Hook is Script {
             IPoolManager(poolManager),
             IJBTokens(jbTokens),
             IJBDirectory(jbDirectory),
+            IJBController(jbController),
             IJBPrices(jbPrices),
             IJBTerminalStore(jbTerminalStore),
             IUniswapV3Factory(v3Factory)
@@ -123,6 +127,7 @@ contract DeployJBUniswapV4Hook is Script {
             IPoolManager(poolManager),
             IJBTokens(jbTokens),
             IJBDirectory(jbDirectory),
+            IJBController(jbController),
             IJBPrices(jbPrices),
             IJBTerminalStore(jbTerminalStore),
             IUniswapV3Factory(v3Factory)

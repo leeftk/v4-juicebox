@@ -147,29 +147,32 @@ contract MockJBMultiTerminal {
         return beneficiaryTokenCount;
     }
 
-    function redeemTokensOf(
-        uint256, /* projectId */
-        address token,
-        uint256 amount,
-        address beneficiary,
-        uint256, /* minReturnedTokens */
-        string calldata, /* memo */
+    function cashOutTokensOf(
+        address, /* holder */
+        uint256 projectId,
+        uint256 cashOutCount,
+        address tokenToReclaim,
+        uint256, /* minTokensReclaimed */
+        address payable beneficiary,
         bytes calldata /* metadata */
     ) external returns (uint256) {
-        // Mock redemption: return the surplus amount per token
-        // This simulates redeeming JB tokens for their surplus value
-        // For testing, we'll mint the output tokens to the beneficiary
-        // In a real implementation, this would come from the terminal's surplus
+        lastProjectId = projectId;
+        lastToken = tokenToReclaim;
+        lastAmount = cashOutCount;
+        lastBeneficiary = beneficiary;
 
-        // Get the surplus amount for this project and token
-        uint256 surplusAmount = TERMINAL_STORE.currentReclaimableSurplusOf(123, 1 ether, uint32(uint160(token)), 18);
+        // Mock cash out: return the surplus amount proportional to the cash out count
+        uint256 surplusAmount = TERMINAL_STORE.currentReclaimableSurplusOf(
+            projectId,
+            1 ether,
+            uint32(uint160(tokenToReclaim)),
+            18
+        );
 
-        // Calculate the output amount based on surplus
-        uint256 outputAmount = (surplusAmount * amount) / 1e18;
+        uint256 outputAmount = (surplusAmount * cashOutCount) / 1e18;
 
-        // Mint the output tokens to the beneficiary (simulating redemption proceeds)
         if (outputAmount > 0) {
-            MockERC20(token).mint(beneficiary, outputAmount);
+            MockERC20(tokenToReclaim).mint(beneficiary, outputAmount);
         }
 
         return outputAmount;
