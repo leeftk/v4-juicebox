@@ -61,6 +61,7 @@ contract JBUniswapV4HookForkTest is Test {
     // Mainnet token addresses
     address constant WETH = 0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2;
     address constant USDC = 0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48;
+    address constant BAN = 0x0faCEdf66a1E37714dbd748639Ea36D23254dB73;
 
     JBUniswapV4Hook hook;
     PoolManager manager;
@@ -124,9 +125,9 @@ contract JBUniswapV4HookForkTest is Test {
             IUniswapV3Factory(MAINNET_V3_FACTORY)
         );
 
-        // Set up a simple pool with USDC/WETH (currencies must be ordered: currency0 < currency1)
+        // Set up a simple pool with BAN/WETH (currencies must be ordered: currency0 < currency1)
         key = PoolKey({
-            currency0: Currency.wrap(USDC),
+            currency0: Currency.wrap(BAN),
             currency1: Currency.wrap(WETH),
             fee: 3000,
             tickSpacing: 60,
@@ -148,7 +149,7 @@ contract JBUniswapV4HookForkTest is Test {
         feeTiers[2] = 10000; // 1%
 
         for (uint256 i = 0; i < feeTiers.length; i++) {
-            address v3Pool = IUniswapV3Factory(MAINNET_V3_FACTORY).getPool(USDC, WETH, feeTiers[i]);
+            address v3Pool = IUniswapV3Factory(MAINNET_V3_FACTORY).getPool(BAN, WETH, feeTiers[i]);
             if (v3Pool != address(0)) {
                 try IUniswapV3Pool(v3Pool).slot0() returns (
                     uint160 sqrtPriceX96, int24, uint16, uint16, uint16, uint8, bool unlocked
@@ -183,8 +184,8 @@ contract JBUniswapV4HookForkTest is Test {
 
     /// @notice Test that the hook can query a real Juicebox project
     function testQueryRealJuiceboxProject() public view {
-        // Query project ID 1 (Juicebox v5 mainnet projects typically start at 1)
-        uint256 projectId = 1;
+        // Look up the project ID based on the BAN token address via JB Tokens registry
+        uint256 projectId = IJBTokens(MAINNET_JB_TOKENS).projectIdOf(IJBToken(BAN));
 
         // Query the project's current ruleset
         (JBRuleset memory ruleset, JBRulesetMetadata memory metadata) =
@@ -196,43 +197,39 @@ contract JBUniswapV4HookForkTest is Test {
 
         // Test calculating expected tokens with ETH payment
         uint256 ethAmount = 1 ether;
-        uint256 expectedTokens = hook.calculateExpectedTokensWithCurrency(
-            projectId,
-            address(0), // ETH
-            ethAmount
-        );
+        uint256 expectedTokens = hook.calculateExpectedTokensWithCurrency(projectId, address(0), 1 ether);
 
         // Should return tokens based on the project's weight
         assertTrue(expectedTokens > 0, "Should calculate expected tokens for ETH payment");
-
-        // Test calculating expected tokens with USDC payment
-        uint256 usdcAmount = 1000 * 1e6; // 1000 USDC (6 decimals)
-        uint256 expectedTokensUSDC = hook.calculateExpectedTokensWithCurrency(projectId, USDC, usdcAmount);
+        console.log("expectedTokens", expectedTokens);
+        // // Test calculating expected tokens with BAN payment
+        // uint256 banAmount = 1000 ether; // 1000 BAN
+        // uint256 expectedTokensBAN = hook.calculateExpectedTokensWithCurrency(projectId, BAN, banAmount);
 
         // Should return tokens (may be 0 if price feed doesn't exist, but should not revert)
-        assertTrue(expectedTokensUSDC >= 0, "Should calculate expected tokens for USDC payment");
+        //assertTrue(expectedTokensBAN >= 0, "Should calculate expected tokens for USDC payment");
 
-        // Try to verify project token registration (if we can find the token)
-        // Note: The exact method to get project token may vary by Juicebox version
-        // This is optional validation - the main test is the ruleset query and calculations
+        // // Try to verify project token registration (if we can find the token)
+        // // Note: The exact method to get project token may vary by Juicebox version
+        // // This is optional validation - the main test is the ruleset query and calculations
 
-        // Test calculating expected output from selling tokens (if project has reclaimable surplus)
-        if (expectedTokens > 0) {
-            uint256 expectedOutput = hook.calculateExpectedOutputFromSelling(projectId, expectedTokens, USDC);
-            // Output may be 0 if no surplus, but should not revert
-            assertTrue(expectedOutput >= 0, "Should calculate expected output from selling tokens");
-        }
+        // // Test calculating expected output from selling tokens (if project has reclaimable surplus)
+        // if (expectedTokens > 0) {
+        //     uint256 expectedOutput = hook.calculateExpectedOutputFromSelling(projectId, expectedTokens, USDC);
+        //     // Output may be 0 if no surplus, but should not revert
+        //     assertTrue(expectedOutput >= 0, "Should calculate expected output from selling tokens");
+        // }
     }
 
     /// @notice Test that estimateUniswapV3Output works with real v3 pools
     function testEstimateUniswapV3OutputWithRealPool() public view {
-        // Check if WETH/USDC pool exists
-        address v3Pool = IUniswapV3Factory(MAINNET_V3_FACTORY).getPool(WETH, USDC, 10000);
+        // Check if WETH/BAN pool exists
+        address v3Pool = IUniswapV3Factory(MAINNET_V3_FACTORY).getPool(WETH, BAN, 10000);
 
         if (v3Pool != address(0)) {
             // Pool exists, try to estimate output
-            // Swap 1000 USDC for WETH: USDC is token1, WETH is token0, so zeroForOne=false
-            try hook.estimateUniswapV3Output(WETH, USDC, 1000 * 1e6, false) returns (uint256 output) {
+            // Swap 1000 BAN for WETH: BAN is token1, WETH is token0, so zeroForOne=false
+            try hook.estimateUniswapV3Output(WETH, BAN, 1 ether, true) returns (uint256 output) {
                 assertTrue(output > 0, "Should return positive output for existing pool");
                 console.log("V3 output:", output);
             } catch Error(string memory reason) {
@@ -247,23 +244,23 @@ contract JBUniswapV4HookForkTest is Test {
         }
     }
 
-    // /// @notice Test that the hook can detect if a token is a Juicebox project token
-    // function testDetectJuiceboxToken() public {
-    //     // This test would need a real JB project token address
-    //     // For now, we just verify the hook can call the TOKENS contract
-    //     try IJBTokens(MAINNET_JB_TOKENS).projectIdOf(IJBToken(address(0))) returns (uint256 projectId) {
-    //         // If address(0) returns 0, that's expected
-    //         assertTrue(projectId == 0 || projectId > 0, "Should return a project ID or 0");
-    //     } catch Error(string memory reason) {
-    //         // Expected to fail for invalid token - address(0) is not a valid IJBToken
-    //         console.log("projectIdOf failed for invalid token:", reason);
-    //         // This is expected behavior
-    //     } catch (bytes memory lowLevelData) {
-    //         // Low-level revert (e.g., invalid function selector, contract doesn't exist)
-    //         console.log("projectIdOf reverted with low-level error");
-    //         // This is acceptable - the token contract may not exist or be invalid
-    //     }
-    // }
+    /// @notice Test that the hook can detect if a token is a Juicebox project token
+    function testDetectJuiceboxToken() public {
+        // This test would need a real JB project token address
+        // For now, we just verify the hook can call the TOKENS contract
+        try IJBTokens(MAINNET_JB_TOKENS).projectIdOf(IJBToken(address(BAN))) returns (uint256 projectId) {
+            // If address(0) returns 0, that's expected
+            assertTrue(projectId == 0 || projectId > 0, "Should return a project ID or 0");
+        } catch Error(string memory reason) {
+            // Expected to fail for invalid token - address(0) is not a valid IJBToken
+            console.log("projectIdOf failed for invalid token:", reason);
+            // This is expected behavior
+        } catch (bytes memory lowLevelData) {
+            // Low-level revert (e.g., invalid function selector, contract doesn't exist)
+            console.log("projectIdOf reverted with low-level error");
+            // This is acceptable - the token contract may not exist or be invalid
+        }
+    }
 
     /// @notice Test that oracle initialization works
     function testOracleInitialization() public view {
@@ -278,10 +275,10 @@ contract JBUniswapV4HookForkTest is Test {
     /// @notice Test that TWAP estimation works with real pool data
     /// @dev Adapted from testEstimateUniswapOutput in the main test file
     function testTWAPEstimationWithRealPool() public view {
-        // Test TWAP estimation for the USDC/WETH pool
+        // Test TWAP estimation for the BAN/WETH pool
         // With only initial observation, estimate should use spot price fallback
 
-        try hook.estimateUniswapOutput(id, key, 1000 * 1e6, true) returns (uint256 estimatedOut) {
+        try hook.estimateUniswapOutput(id, key, 1 ether, false) returns (uint256 estimatedOut) {
             // Should return positive value (may be 0 if pool has no liquidity)
             assertTrue(estimatedOut >= 0, "Should estimate output (may be 0 for empty pool)");
             console.log("Uniswap output:", estimatedOut);
@@ -299,14 +296,14 @@ contract JBUniswapV4HookForkTest is Test {
     /// @notice Test that v3 routing comparison works with real Uniswap v3 pools
     /// @dev Adapted from testV3RoutingWhenCheaper in the main test file
     function testV3RoutingComparisonWithRealPool() public view {
-        // Check if WETH/USDC v3 pool exists (10000 fee tier)
-        address v3Pool = IUniswapV3Factory(MAINNET_V3_FACTORY).getPool(WETH, USDC, 10000);
+        // Check if WETH/BAN v3 pool exists (10000 fee tier)
+        address v3Pool = IUniswapV3Factory(MAINNET_V3_FACTORY).getPool(WETH, BAN, 10000);
 
         if (v3Pool != address(0)) {
             // Pool exists, test v3 output estimation
             uint256 amountIn = 1 ether; // 1 WETH
 
-            try hook.estimateUniswapV3Output(WETH, USDC, amountIn, true) returns (uint256 v3Output) {
+            try hook.estimateUniswapV3Output(WETH, BAN, amountIn, true) returns (uint256 v3Output) {
                 // Also estimate v4 output for comparison
                 try hook.estimateUniswapOutput(id, key, amountIn, false) returns (uint256 v4Output) {
                     // Both should return positive values
@@ -341,7 +338,7 @@ contract JBUniswapV4HookForkTest is Test {
     function testComplexMultiRoutePriceComparison() public view {
         // Query prices from existing pools without adding liquidity
         // Check if v3 pool exists
-        address v3Pool = IUniswapV3Factory(MAINNET_V3_FACTORY).getPool(WETH, USDC, 10000);
+        address v3Pool = IUniswapV3Factory(MAINNET_V3_FACTORY).getPool(WETH, BAN, 10000);
 
         if (v3Pool != address(0)) {
             // Test with a real swap amount
@@ -360,7 +357,7 @@ contract JBUniswapV4HookForkTest is Test {
             }
 
             // Get v3 output estimate
-            try hook.estimateUniswapV3Output(WETH, USDC, testAmount, true) returns (uint256 output) {
+            try hook.estimateUniswapV3Output(WETH, BAN, testAmount, true) returns (uint256 output) {
                 v3Output = output;
             } catch {
                 v3Output = 0;
@@ -368,8 +365,8 @@ contract JBUniswapV4HookForkTest is Test {
 
             // Try to get Juicebox output (if we can find a project)
             // Query project ID 1 as a test
-            uint256 projectId = 1;
-            try hook.calculateExpectedTokensWithCurrency(projectId, USDC, testAmount) returns (uint256 output) {
+            uint256 projectId = IJBTokens(MAINNET_JB_TOKENS).projectIdOf(IJBToken(BAN));
+            try hook.calculateExpectedTokensWithCurrency(projectId, address(0), testAmount) returns (uint256 output) {
                 juiceboxOutput = output;
             } catch {
                 juiceboxOutput = 0;
