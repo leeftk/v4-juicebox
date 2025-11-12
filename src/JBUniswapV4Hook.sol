@@ -67,16 +67,14 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
     // --------------------------- custom errors ------------------------- //
     //*********************************************************************//
 
-    error JBUniswapV4Hook_InvalidCurrencyId();
-
     //*********************************************************************//
     // ---------------------------- structs ------------------------------ //
     //*********************************************************************//
 
     /// @notice Tracks the oracle observation state for a pool
-    /// @member index The index of the last written observation for the pool
-    /// @member cardinality The cardinality of the observations array for the pool
-    /// @member cardinalityNext The cardinality target of the observations array for the pool
+    /// @custom:member index The index of the last written observation for the pool
+    /// @custom:member cardinality The cardinality of the observations array for the pool
+    /// @custom:member cardinalityNext The cardinality target of the observations array for the pool
     struct ObservationState {
         uint16 index;
         uint16 cardinality;
@@ -857,19 +855,13 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
         bool isBuyingJBToken = _checkAndRegisterJuiceboxToken(tokenOut, poolId) == projectId;
 
         uint256 juiceboxExpectedOutput;
-        uint256 uniswapExpectedOutput;
-        bool juiceboxBetter = false;
 
         if (isBuyingJBToken) {
             // Buying JB tokens: compare Juicebox vs Uniswap for getting JB tokens
             juiceboxExpectedOutput = calculateExpectedTokensWithCurrency(projectId, tokenIn, amountIn);
-            uniswapExpectedOutput = estimateUniswapOutput(poolId, key, amountIn, params.zeroForOne);
-            juiceboxBetter = juiceboxExpectedOutput > uniswapExpectedOutput;
         } else if (isSellingJBToken) {
             // Selling JB tokens: compare Juicebox vs Uniswap for getting output tokens
             juiceboxExpectedOutput = calculateExpectedOutputFromSelling(projectId, amountIn, tokenOut);
-            uniswapExpectedOutput = estimateUniswapOutput(poolId, key, amountIn, params.zeroForOne);
-            juiceboxBetter = juiceboxExpectedOutput > uniswapExpectedOutput;
         } else {
             // No JB token involved, proceed with normal Uniswap swap
             emit RouteSelected(poolId, false, 0, 0);
@@ -1105,30 +1097,6 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
         return outputReceived;
     }
 
-    /// @notice Compute the deterministic address of a Uniswap v3 pool
-    /// @dev Uses CREATE2 address computation (same as Uniswap v3 factory)
-    /// @param factory The v3 factory address
-    /// @param token0 First token (must be < token1)
-    /// @param token1 Second token (must be > token0)
-    /// @param fee The fee tier
-    /// @return pool The computed pool address
-    function _computeV3PoolAddress(address factory, address token0, address token1, uint24 fee)
-        internal
-        pure
-        returns (address pool)
-    {
-        require(token0 < token1, "Invalid token order");
-        
-        // Uniswap v3 pool init code hash
-        bytes32 POOL_INIT_CODE_HASH = 0xe34f199b19b2b4f47f68442619d555527d244f78a3297ea89325f843f87b8b54;
-        
-        bytes32 salt = keccak256(abi.encode(token0, token1, fee));
-        bytes32 hash = keccak256(abi.encodePacked(hex"ff", factory, salt, POOL_INIT_CODE_HASH));
-        
-        // Convert to address (uint160 is the size of an address)
-        pool = address(uint160(uint256(hash)));
-    }
-
     /// @notice Callback for Uniswap v3 swaps
     /// @dev Called by the v3 pool during swap execution to request payment
     /// @param amount0Delta The amount of token0 that must be paid (positive) or received (negative)
@@ -1166,4 +1134,3 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
         IERC20(tokenToPay).safeTransfer(msg.sender, amountToPay);
     }
 }
-
