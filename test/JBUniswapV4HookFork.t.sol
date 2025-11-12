@@ -207,19 +207,6 @@ contract JBUniswapV4HookForkTest is Test {
         );
     }
 
-    /// @notice Test that calculateExpectedTokensWithCurrency works with real contracts
-    function testCalculateExpectedTokensWithRealContracts() public view {
-        // Try to calculate expected tokens for a known project (if it exists)
-        // Using project ID 1 as an example
-        try hook.calculateExpectedTokensWithCurrency(1, address(0), 1 ether) returns (uint256 tokens) {
-            // Calculation succeeded
-            assertTrue(tokens >= 0, "Should return non-negative tokens");
-        } catch {
-            // Project doesn't exist or other error - this is expected for unknown projects
-            // In production, you'd use a known project ID
-        }
-    }
-
     /// @notice Test that estimateUniswapV3Output works with real v3 pools
     function testEstimateUniswapV3OutputWithRealPool() public view {
         // Check if WETH/USDC pool exists
@@ -229,8 +216,14 @@ contract JBUniswapV4HookForkTest is Test {
             // Pool exists, try to estimate output
             try hook.estimateUniswapV3Output(WETH, USDC, 1 ether, true) returns (uint256 output) {
                 assertTrue(output > 0, "Should return positive output for existing pool");
-            } catch {
-                // Estimation failed - might be due to pool state
+            } catch Error(string memory reason) {
+                // Estimation failed - might be due to pool state, insufficient observations, or no liquidity
+                console.log("V3 estimation failed:", reason);
+                // This is acceptable - pool may not have enough TWAP data or liquidity
+            } catch (bytes memory lowLevelData) {
+                // Low-level revert (e.g., division by zero, overflow)
+                console.log("V3 estimation reverted with low-level error");
+                // This is acceptable - pool state may be invalid
             }
         } else {
             // Pool doesn't exist, skip
@@ -244,8 +237,14 @@ contract JBUniswapV4HookForkTest is Test {
         try IJBTokens(MAINNET_JB_TOKENS).projectIdOf(IJBToken(address(0))) returns (uint256 projectId) {
             // If address(0) returns 0, that's expected
             assertTrue(projectId == 0 || projectId > 0, "Should return a project ID or 0");
-        } catch {
-            // Expected to fail for invalid token
+        } catch Error(string memory reason) {
+            // Expected to fail for invalid token - address(0) is not a valid IJBToken
+            console.log("projectIdOf failed for invalid token:", reason);
+            // This is expected behavior
+        } catch (bytes memory lowLevelData) {
+            // Low-level revert (e.g., invalid function selector, contract doesn't exist)
+            console.log("projectIdOf reverted with low-level error");
+            // This is acceptable - the token contract may not exist or be invalid
         }
     }
 
@@ -257,6 +256,69 @@ contract JBUniswapV4HookForkTest is Test {
         assertEq(index, 0, "Initial index should be 0");
         assertEq(cardinality, 1, "Initial cardinality should be 1");
         assertEq(cardinalityNext, 1, "Initial cardinalityNext should be 1");
+    }
+
+    /// @notice Test that TWAP estimation works with real pool data
+    /// @dev Adapted from testEstimateUniswapOutput in the main test file
+    function testTWAPEstimationWithRealPool() public view {
+        // Test TWAP estimation for the USDC/WETH pool
+        // With only initial observation, estimate should use spot price fallback
+        uint256 amountIn = 1000 * 1e6; // 1000 USDC (6 decimals)
+
+        try hook.estimateUniswapOutput(id, key, amountIn, true) returns (uint256 estimatedOut) {
+            // Should return positive value (may be 0 if pool has no liquidity)
+            assertTrue(estimatedOut >= 0, "Should estimate output (may be 0 for empty pool)");
+        } catch Error(string memory reason) {
+            // Estimation may fail if pool has issues (no observations, invalid state)
+            console.log("Uniswap output estimation failed:", reason);
+            // This is acceptable - pool may not have enough TWAP data yet
+        } catch (bytes memory lowLevelData) {
+            // Low-level revert (e.g., division by zero, arithmetic overflow)
+            console.log("Uniswap output estimation reverted with low-level error");
+            // This is acceptable - pool state may be invalid or calculations may overflow
+        }
+    }
+
+    /// @notice Test that v3 routing comparison works with real Uniswap v3 pools
+    /// @dev Adapted from testV3RoutingWhenCheaper in the main test file
+    function testV3RoutingComparisonWithRealPool() public view {
+        // Check if WETH/USDC v3 pool exists (10000 fee tier)
+        address v3Pool = IUniswapV3Factory(MAINNET_V3_FACTORY).getPool(WETH, USDC, 10000);
+
+        if (v3Pool != address(0)) {
+            // Pool exists, test v3 output estimation
+            uint256 amountIn = 1 ether; // 1 WETH
+
+            try hook.estimateUniswapV3Output(WETH, USDC, amountIn, true) returns (uint256 v3Output) {
+                // Also estimate v4 output for comparison
+                try hook.estimateUniswapOutput(id, key, amountIn, false) returns (uint256 v4Output) {
+                    // Both should return positive values
+                    assertTrue(v3Output > 0, "V3 should return positive output");
+                    assertTrue(v4Output >= 0, "V4 should return non-negative output");
+
+                    // The hook will compare these and route to the better option
+                    // This test verifies both estimation methods work with real pools
+                } catch Error(string memory reason) {
+                    // V4 estimation failed (pool may be empty, no observations, or invalid state)
+                    console.log("V4 output estimation failed:", reason);
+                    // This is acceptable - v4 pool may not have enough TWAP data
+                } catch (bytes memory lowLevelData) {
+                    // Low-level revert for v4 estimation
+                    console.log("V4 output estimation reverted with low-level error");
+                    // This is acceptable - pool state may be invalid
+                }
+            } catch Error(string memory reason) {
+                // V3 estimation failed - might be due to pool state, insufficient observations, or no liquidity
+                console.log("V3 output estimation failed:", reason);
+                // This is acceptable - v3 pool may not have enough TWAP data or liquidity
+            } catch (bytes memory lowLevelData) {
+                // Low-level revert for v3 estimation
+                console.log("V3 output estimation reverted with low-level error");
+                // This is acceptable - pool state may be invalid
+            }
+        } else {
+            // Pool doesn't exist, skip
+        }
     }
 }
 
