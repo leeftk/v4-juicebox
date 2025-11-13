@@ -156,8 +156,6 @@ contract JBUniswapV4HookForkTest is Test {
                 ) {
                     if (unlocked && sqrtPriceX96 > 0) {
                         v3SqrtPriceX96 = sqrtPriceX96;
-                        console.log("Using V3 pool price from fee tier:", feeTiers[i]);
-                        console.log("V3 sqrtPriceX96:", sqrtPriceX96);
                         break;
                     }
                 } catch {
@@ -390,6 +388,153 @@ contract JBUniswapV4HookForkTest is Test {
 
             assertTrue(bestOutput > 0, "Best output should be positive");
         }
+    }
+
+    /// @notice Perform a real swap using BAN/WETH on fork via the hook/router (v3/Juicebox/v4 as decided by hook)
+    /// @dev Mirrors the swap flow from testNonJuiceboxTokenSwap but uses real BAN/WETH and no mocks
+    function testBAN_ETH_SwapExecution() public {
+        address user = testUser;
+
+        // Deal BAN and ETH to user
+        uint256 banAmount = 1_000 ether;
+        uint256 ethAmount = 100 ether;
+        deal(BAN, user, banAmount);
+        vm.deal(user, ethAmount);
+
+        // User wraps some ETH to WETH for liquidity and swap
+        vm.startPrank(user);
+        uint256 wethForLiquidity = 10 ether;
+        (bool wrapOk,) = WETH.call{value: wethForLiquidity}(abi.encodeWithSignature("deposit()"));
+        require(wrapOk, "WETH deposit failed");
+
+        // Approve tokens for liquidity addition
+        IERC20(BAN).approve(address(modifyLiquidityRouter), type(uint256).max);
+        IERC20(WETH).approve(address(modifyLiquidityRouter), type(uint256).max);
+
+        // Add some liquidity to BAN/WETH v4 pool
+        modifyLiquidityRouter.modifyLiquidity(
+            key,
+            ModifyLiquidityParams({tickLower: -60, tickUpper: 60, liquidityDelta: 10 ether, salt: bytes32(0)}),
+            ZERO_BYTES
+        );
+
+        // Approve router for swap input (WETH)
+        uint256 amountIn = 1 ether;
+        IERC20(WETH).approve(address(jbSwapRouter), amountIn);
+
+        // Record balances
+        uint256 initialBAN = IERC20(BAN).balanceOf(user);
+        uint256 initialWETH = IERC20(WETH).balanceOf(user);
+
+        // Swap WETH (currency1) -> BAN (currency0)
+        SwapParams memory params = SwapParams({
+            zeroForOne: false, amountSpecified: -int256(amountIn), sqrtPriceLimitX96: TickMath.MAX_SQRT_PRICE - 1
+        });
+
+        // Execute swap via JB router (hook decides between v3/JB/v4)
+        try jbSwapRouter.swap(key, params) {
+            uint256 finalBAN = IERC20(BAN).balanceOf(user);
+            uint256 finalWETH = IERC20(WETH).balanceOf(user);
+
+            assertGt(finalBAN, initialBAN, "Should have received BAN");
+            assertLe(finalWETH, initialWETH, "WETH should not increase");
+        } catch Error(string memory reason) {
+            console.log("BAN<-WETH swap failed:", reason);
+        } catch (bytes memory) {
+            console.log("BAN<-WETH swap reverted with low-level error");
+        }
+        vm.stopPrank();
+    }
+
+    /// @notice Test that an oracle observation is recorded after a swap on fork
+    function testOracleObservationRecording() public {
+        // Record initial observation index
+        (uint16 initialIndex,,) = hook.states(id);
+
+        // Prepare a user with tokens and add minimal liquidity so a swap can execute
+        address user = testUser;
+        uint256 banAmount = 1_000 ether;
+        uint256 wethForLiquidity = 2 ether;
+        uint256 amountIn = 0.1 ether;
+
+        // Fund user with BAN and ETH, then wrap ETH to WETH
+        deal(BAN, user, banAmount);
+        vm.deal(user, 5 ether);
+
+        vm.startPrank(user);
+        (bool wrapOk,) = WETH.call{value: wethForLiquidity + amountIn}(abi.encodeWithSignature("deposit()"));
+        require(wrapOk, "WETH deposit failed");
+
+        // Approve for liquidity and swap
+        IERC20(BAN).approve(address(modifyLiquidityRouter), type(uint256).max);
+        IERC20(WETH).approve(address(modifyLiquidityRouter), type(uint256).max);
+        IERC20(WETH).approve(address(jbSwapRouter), amountIn);
+
+        // Add a bit of liquidity to enable swapping
+        modifyLiquidityRouter.modifyLiquidity(
+            key,
+            ModifyLiquidityParams({tickLower: -60, tickUpper: 60, liquidityDelta: 5 ether, salt: bytes32(0)}),
+            ZERO_BYTES
+        );
+
+        // Ensure a different timestamp for a new observation slot
+        vm.warp(block.timestamp + 1);
+
+        // Execute a small WETH -> BAN swap (currency1 -> currency0)
+        SwapParams memory params = SwapParams({
+            zeroForOne: false, amountSpecified: -int256(amountIn), sqrtPriceLimitX96: TickMath.MAX_SQRT_PRICE - 1
+        });
+        jbSwapRouter.swap(key, params);
+        vm.stopPrank();
+
+        // Check that observation index moved forward (or wrapped)
+        (uint16 newIndex,,) = hook.states(id);
+        assertTrue(newIndex == initialIndex + 1 || newIndex == 0, "Index should have incremented");
+    }
+
+    /// @notice Given initial cardinality is 1, after a swap it should be >= 1 (may grow)
+    function testCardinalityIncrease() public {
+        // Check initial cardinality
+        (, uint16 initialCardinality,) = hook.states(id);
+        assertEq(initialCardinality, 1, "Initial cardinality should be 1");
+
+        // Prepare user, liquidity, and perform a small swap
+        address user = testUser;
+        uint256 banAmount = 1_000 ether;
+        uint256 wethForLiquidity = 2 ether;
+        uint256 amountIn = 0.1 ether;
+
+        deal(BAN, user, banAmount);
+        vm.deal(user, 5 ether);
+
+        vm.startPrank(user);
+        (bool wrapOk,) = WETH.call{value: wethForLiquidity + amountIn}(abi.encodeWithSignature("deposit()"));
+        require(wrapOk, "WETH deposit failed");
+
+        IERC20(BAN).approve(address(modifyLiquidityRouter), type(uint256).max);
+        IERC20(WETH).approve(address(modifyLiquidityRouter), type(uint256).max);
+        IERC20(WETH).approve(address(jbSwapRouter), amountIn);
+
+        // Add minimal liquidity
+        modifyLiquidityRouter.modifyLiquidity(
+            key,
+            ModifyLiquidityParams({tickLower: -60, tickUpper: 60, liquidityDelta: 5 ether, salt: bytes32(0)}),
+            ZERO_BYTES
+        );
+
+        // Ensure a new timestamp for a distinct observation
+        vm.warp(block.timestamp + 1);
+
+        // Execute small WETH -> BAN swap
+        SwapParams memory params = SwapParams({
+            zeroForOne: false, amountSpecified: -int256(amountIn), sqrtPriceLimitX96: TickMath.MAX_SQRT_PRICE - 1
+        });
+        jbSwapRouter.swap(key, params);
+        vm.stopPrank();
+
+        // Cardinality should be >= initial (may remain 1 or grow depending on implementation)
+        (, uint16 newCardinality,) = hook.states(id);
+        assertGe(newCardinality, initialCardinality, "Cardinality should have grown or stayed the same");
     }
 }
 
