@@ -109,11 +109,18 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
     /// @notice Juicebox native token address
     address public constant JB_NATIVE_TOKEN = address(0x000000000000000000000000000000000000EEEe);
 
+    /// @notice Canonical WETH9 address on Ethereum mainnet. Treated as native ETH for pricing.
+    address public constant WRAPPED_NATIVE_ETH = 0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2;
+
     /// @notice TWAP period in seconds (30 minutes by default)
     uint32 public constant TWAP_PERIOD = 1800;
 
     /// @notice Standard TWAP window in seconds (1 hour by default)
     uint256 public constant STANDARD_TWAP_WINDOW = 1 hours;
+
+    /// @notice Uniswap v3 sqrt price bounds used when routing via v3 pools
+    uint160 internal constant V3_MIN_SQRT_RATIO = 4295128739;
+    uint160 internal constant V3_MAX_SQRT_RATIO = 1461446703485210103287273052203988822378723970342;
 
     /// @notice The denominator used when calculating TWAP slippage percent values.
     uint256 public constant TWAP_SLIPPAGE_DENOMINATOR = 10_000;
@@ -229,17 +236,17 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
         uint256 tokensPerBaseCurrency;
         // Get the currency Id for the `weight`.
         uint256 baseCurrency;
-        try CONTROLLER.currentRulesetOf(
-            projectId
-        ) returns (JBRuleset memory ruleset, JBRulesetMetadata memory metadata) {
+        try CONTROLLER.currentRulesetOf(projectId) returns (
+            JBRuleset memory ruleset, JBRulesetMetadata memory metadata
+        ) {
             tokensPerBaseCurrency = ruleset.weight;
             baseCurrency = metadata.baseCurrency;
         } catch {
             return 0;
         }
 
-        // Use Juicebox's address for native token if the payment token is uniswap's native token.
-        if (paymentToken == UNISWAP_NATIVE_ETH) paymentToken = JB_NATIVE_TOKEN;
+        // Use Juicebox's address for native token if the payment token is uniswap's native token or WETH.
+        if (paymentToken == UNISWAP_NATIVE_ETH || paymentToken == WRAPPED_NATIVE_ETH) paymentToken = JB_NATIVE_TOKEN;
 
         // Get the currency ID for the payment token
         uint32 paymentCurrencyId = uint32(uint160(paymentToken));
@@ -572,7 +579,6 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
         amountOut -= (amountOut * slippageTolerance) / TWAP_SLIPPAGE_DENOMINATOR;
     }
 
-
     /// @notice Get the slippage tolerance for a given amount in and liquidity.
     /// @param amountIn The amount in to get the slippage tolerance for.
     /// @param liquidity The liquidity to get the slippage tolerance for.
@@ -609,46 +615,46 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
         // Stage 2 — policy adjustment: map raw → adjusted using log scaling and caps
         // Higher rawSlippageBps (lower liquidity) = MORE protection. Lower rawSlippageBps = LESS protection.
         if (rawSlippageBps == 0) return UNCERTAIN_TWAP_SLIPPAGE_TOLERANCE;
-        
+
         // Cap very large values at reasonable maximum
         uint256 maxAllowed = rawSlippageBps > 15 * TWAP_SLIPPAGE_DENOMINATOR
             ? TWAP_SLIPPAGE_DENOMINATOR * 88 / 100
             : (rawSlippageBps > 10 * TWAP_SLIPPAGE_DENOMINATOR
-                ? TWAP_SLIPPAGE_DENOMINATOR * 67 / 100
-                : rawSlippageBps / 5); // Default max: 20% of input
-        
+                    ? TWAP_SLIPPAGE_DENOMINATOR * 67 / 100
+                    : rawSlippageBps / 5); // Default max: 20% of input
+
         // Logarithmic scaling: Use log2 to create smooth growth with diminishing returns
         // Formula: adjusted grows logarithmically with rawSlippageBps
         // Scale rawSlippageBps to UD60x18 format (multiply by 1e18 to satisfy log2 requirement of x >= UNIT)
         uint256 scaledValue = rawSlippageBps * 1e18;
         if (scaledValue < 1e18) scaledValue = 1e18; // Ensure >= UNIT for log2
-        
+
         UD60x18 logValue = log2(UD60x18.wrap(scaledValue));
-        
+
         // Unwrap logValue - it's in UD60x18 format where 1 = 1e18
         // Divide by 1e18 to get the actual log2 value
         uint256 logApprox = UD60x18.unwrap(logValue) / 1e18;
-        
+
         // Base value: minimum slippage protection (for very small raw/high liquidity)
         uint256 baseValue = UNCERTAIN_TWAP_SLIPPAGE_TOLERANCE;
-        
+
         // Scale factor: how much the log value contributes to the result
         // Higher scaleFactor = steeper curve (more sensitive to liquidity changes)
         uint256 scaleFactor = 800; // Adjusts the steepness of the logarithmic curve
-        
+
         // Calculate adjusted: base + logarithmic growth
         // Higher raw (low liquidity) → larger logApprox → larger adjusted (more protection)
         // Lower raw (high liquidity) → smaller logApprox → smaller adjusted (less protection)
         uint256 adjustedSlippageBps = baseValue + (scaleFactor * logApprox) / 2;
-        
+
         // Cap at reasonable maximum to prevent excessive slippage protection
         if (adjustedSlippageBps > maxAllowed) adjustedSlippageBps = maxAllowed;
-        
+
         // For very small raw (high liquidity), ensure minimum sensible protection
         if (rawSlippageBps < 500 && adjustedSlippageBps < baseValue + 100) {
             adjustedSlippageBps = baseValue + (rawSlippageBps / 5);
         }
-        
+
         return adjustedSlippageBps;
     }
 
@@ -688,16 +694,16 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
     /// @param pool Address of Uniswap V3 pool that we want to observe
     /// @return secondsAgo The number of seconds ago of the oldest observation stored for the pool
     function _getOldestObservationSecondsAgo(IUniswapV3Pool pool) external view returns (uint32 secondsAgo) {
-        (, , uint16 observationIndex, uint16 observationCardinality, , , ) = pool.slot0();
+        (,, uint16 observationIndex, uint16 observationCardinality,,,) = pool.slot0();
         require(observationCardinality > 0);
 
-        (uint32 observationTimestamp, , , bool initialized) =
+        (uint32 observationTimestamp,,, bool initialized) =
             pool.observations((observationIndex + 1) % observationCardinality);
 
         // The next index might not be initialized if the cardinality is in the process of increasing
         // In this case the oldest observation is always in index 0
         if (!initialized) {
-            (observationTimestamp, , , ) = pool.observations(0);
+            (observationTimestamp,,,) = pool.observations(0);
         }
 
         secondsAgo = uint32(block.timestamp) - observationTimestamp;
@@ -766,8 +772,9 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
         ObservationState memory state = states[poolId];
 
         // Write new observation
-        (uint16 indexUpdated, uint16 cardinalityUpdated) = observations[poolId]
-        .write(state.index, uint32(block.timestamp), tick, liquidity, state.cardinality, state.cardinalityNext);
+        (uint16 indexUpdated, uint16 cardinalityUpdated) = observations[poolId].write(
+            state.index, uint32(block.timestamp), tick, liquidity, state.cardinality, state.cardinalityNext
+        );
 
         // Update state
         states[poolId] = ObservationState({
@@ -815,11 +822,14 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
         if (hookData.length >= 32) {
             // HookData contains the router address - call msgSender() on it to get actual user
             address routerAddress = abi.decode(hookData, (address));
-            try IMsgSender(routerAddress).msgSender() returns (address user) {
-                actualUser = user;
-            } catch {
-                // Router doesn't support msgSender(), can't route to JB
-                actualUser = address(0);
+            // Only attempt the call if the address has code (is a contract)
+            if (routerAddress.code.length > 0) {
+                try IMsgSender(routerAddress).msgSender() returns (address user) {
+                    actualUser = user;
+                } catch {
+                    // Router doesn't support msgSender(), can't route to JB
+                    actualUser = address(0);
+                }
             }
         }
 
@@ -910,7 +920,18 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
         }
 
         // Check if Juicebox is better than the best Uniswap option
-        bool juiceboxBetterThanUniswap = juiceboxExpectedOutput > bestExpectedTokens;
+        // Only consider Juicebox if a valid terminal exists for the input token
+        IJBTerminal jbTerminal;
+        // For buying: terminal must support the payment token (tokenIn)
+        // For selling: terminal must manage the JB token (tokenIn is JB token in that branch)
+        try DIRECTORY.primaryTerminalOf(projectId, tokenIn) returns (IJBTerminal t) {
+            jbTerminal = t;
+        } catch {
+            jbTerminal = IJBTerminal(address(0));
+        }
+
+        bool jbTerminalAvailable = address(jbTerminal) != address(0) && address(jbTerminal).code.length > 0;
+        bool juiceboxBetterThanUniswap = jbTerminalAvailable && juiceboxExpectedOutput > bestExpectedTokens;
         if (juiceboxBetterThanUniswap && juiceboxExpectedOutput > 0) {
             bestExpectedTokens = juiceboxExpectedOutput;
             bestRoute = "juicebox";
@@ -941,13 +962,13 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
         if (v3BetterThanV4 && uniswapV3ExpectedTokens > 0) {
             // Execute v3 swap
             uint256 outputReceived = _routeThroughV3(tokenIn, tokenOut, amountIn, params.zeroForOne);
-            
+
             emit RouteSelected(poolId, false, outputReceived, outputReceived - uniswapV4ExpectedTokens);
-            
+
             // Return delta that reflects what hook did
             // The hook takes the input amount and settles the output amount
             BeforeSwapDelta hookDelta = toBeforeSwapDelta(int128(uint128(amountIn)), -int128(uint128(outputReceived)));
-            
+
             return (BaseHook.beforeSwap.selector, hookDelta, 0);
         }
 
@@ -980,6 +1001,8 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
         // For buying: terminal handles tokenIn (payment token)
         // For selling: terminal handles tokenIn (JB token being redeemed)
         IJBTerminal terminal = IJBTerminal(DIRECTORY.primaryTerminalOf(projectId, tokenIn));
+        // If no terminal is available for this token, skip JB routing
+        require(address(terminal) != address(0), "No JB terminal for token");
 
         // Take input from PoolManager (pre-deposited by JuiceboxSwapRouter)
         poolManager.take(inputCurrency, address(this), amountIn);
@@ -992,10 +1015,7 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
         if (isBuying) {
             // Buying JB tokens: Pay to Juicebox and receive JB tokens
             uint256 payValue = inputCurrency.isAddressZero() ? amountIn : 0;
-            outputReceived = IJBMultiTerminal(address(terminal))
-            .pay{
-                value: payValue
-            }(
+            outputReceived = IJBMultiTerminal(address(terminal)).pay{value: payValue}(
                 projectId,
                 tokenIn,
                 amountIn,
@@ -1038,16 +1058,14 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
     /// @param amountIn The amount of input tokens
     /// @param zeroForOne Whether swapping token0 for token1
     /// @return outputReceived The amount of output tokens received
-    function _routeThroughV3(
-        address tokenIn,
-        address tokenOut,
-        uint256 amountIn,
-        bool zeroForOne
-    ) internal returns (uint256 outputReceived) {
+    function _routeThroughV3(address tokenIn, address tokenOut, uint256 amountIn, bool zeroForOne)
+        internal
+        returns (uint256 outputReceived)
+    {
         // Convert Uniswap native ETH to address(0) for v3 pool lookup
         address token0 = tokenIn < tokenOut ? tokenIn : tokenOut;
         address token1 = tokenIn < tokenOut ? tokenOut : tokenIn;
-        
+
         // Get the v3 pool (10000 fee tier)
         address v3Pool = V3_FACTORY.getPool(token0, token1, 10000);
         require(v3Pool != address(0), "V3 pool not found");
@@ -1063,17 +1081,18 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
 
         // Determine swap direction based on token ordering
         bool swapZeroForOne = tokenIn < tokenOut;
-        
+
         // Execute v3 swap
         // v3 swap parameters: recipient, zeroForOne, amountSpecified, sqrtPriceLimitX96, data
         // The swap will call uniswapV3SwapCallback during execution
-        (int256 amount0Delta, int256 amount1Delta) = IUniswapV3Pool(v3Pool).swap(
-            address(this), // recipient
-            swapZeroForOne,
-            int256(amountIn), // amountSpecified (positive for exact input)
-            0, // sqrtPriceLimitX96 (0 = no limit)
-            abi.encode(token0, token1, uint24(10000)) // data for callback validation
-        );
+        (int256 amount0Delta, int256 amount1Delta) = IUniswapV3Pool(v3Pool)
+            .swap(
+                address(this), // recipient
+                swapZeroForOne,
+                int256(amountIn), // amountSpecified (positive for exact input)
+                swapZeroForOne ? V3_MIN_SQRT_RATIO + 1 : V3_MAX_SQRT_RATIO - 1,
+                abi.encode(token0, token1, uint24(10000)) // data for callback validation
+            );
 
         // Calculate output received (one of the deltas will be negative, the other positive)
         if (swapZeroForOne) {
@@ -1093,7 +1112,6 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
             // Output is native ETH - settle with value
             poolManager.settle{value: outputReceived}();
         }
-
         return outputReceived;
     }
 
@@ -1102,16 +1120,12 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
     /// @param amount0Delta The amount of token0 that must be paid (positive) or received (negative)
     /// @param amount1Delta The amount of token1 that must be paid (positive) or received (negative)
     /// @param data Additional data containing pool info for validation
-    function uniswapV3SwapCallback(
-        int256 amount0Delta,
-        int256 amount1Delta,
-        bytes calldata data
-    ) external override {
+    function uniswapV3SwapCallback(int256 amount0Delta, int256 amount1Delta, bytes calldata data) external override {
         require(amount0Delta > 0 || amount1Delta > 0, "No swap");
-        
+
         // Decode pool info from data
         (address token0, address token1, uint24 fee) = abi.decode(data, (address, address, uint24));
-        
+
         // Validate callback - ensure msg.sender is a valid v3 pool from the factory
         // Check via factory's getPool method (works for both real and mock factories)
         address expectedPool = V3_FACTORY.getPool(token0, token1, fee);
@@ -1120,7 +1134,7 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
         // Determine which token to pay (one delta will be positive)
         uint256 amountToPay;
         address tokenToPay;
-        
+
         if (amount0Delta > 0) {
             amountToPay = uint256(amount0Delta);
             tokenToPay = token0;

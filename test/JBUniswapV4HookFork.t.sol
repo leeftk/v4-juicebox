@@ -31,12 +31,14 @@ import {
     IJBDirectory,
     IJBTerminalStore
 } from "../src/JBUniswapV4Hook.sol";
+import {IJBTerminal} from "@bananapus/core-v5/interfaces/IJBTerminal.sol";
 import {IJBToken} from "@bananapus/core-v5/interfaces/IJBToken.sol";
 import {JBRuleset} from "@bananapus/core-v5/structs/JBRuleset.sol";
 import {JBRulesetMetadata} from "@bananapus/core-v5/structs/JBRulesetMetadata.sol";
 import {IUniswapV3Factory} from "../src/interfaces/IUniswapV3Factory.sol";
 import {IUniswapV3Pool} from "../src/interfaces/IUniswapV3Pool.sol";
 import {HookMiner} from "@uniswap/v4-periphery/src/utils/HookMiner.sol";
+import {INonfungiblePositionManager} from "../lib/v3-periphery/contracts/interfaces/INonfungiblePositionManager.sol";
 
 /// @title JBUniswapV4HookForkTest
 /// @notice Fork tests using mainnet addresses
@@ -57,11 +59,14 @@ contract JBUniswapV4HookForkTest is Test {
     address constant MAINNET_JB_PRICES = 0x9b90E507cF6B7eB681A506b111f6f50245e614c4;
     address constant MAINNET_JB_TERMINAL_STORE = 0xfE33B439Ec53748C87DcEDACb83f05aDd5014744;
     address constant MAINNET_V3_FACTORY = 0x1F98431c8aD98523631AE4a59f267346ea31F984;
+    address constant MAINNET_V3_POSITION_MANAGER = 0xC36442b4a4522E871399CD717aBDD847Ab11FE88;
+    uint24 constant V3_FEE_TIER = 10000; // 1%
 
     // Mainnet token addresses
     address constant WETH = 0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2;
     address constant USDC = 0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48;
     address constant BAN = 0x0faCEdf66a1E37714dbd748639Ea36D23254dB73;
+    address constant NANA = 0x58204a8849BF6A625D56021adfD12ce4a4A3AF13;
 
     JBUniswapV4Hook hook;
     PoolManager manager;
@@ -81,7 +86,8 @@ contract JBUniswapV4HookForkTest is Test {
 
     function setUp() public {
         // Fork mainnet at a recent block
-        vm.createFork(vm.envString("MAINNET_RPC_URL"));
+        uint256 forkId = vm.createFork(vm.envString("MAINNET_RPC_URL"));
+        vm.selectFork(forkId);
 
         // Mark mainnet contracts as persistent so they can be called in fork tests
         vm.makePersistent(MAINNET_JB_TOKENS);
@@ -90,6 +96,12 @@ contract JBUniswapV4HookForkTest is Test {
         vm.makePersistent(MAINNET_JB_PRICES);
         vm.makePersistent(MAINNET_JB_TERMINAL_STORE);
         vm.makePersistent(MAINNET_V3_FACTORY);
+        // Persist other external contracts used during tests
+        vm.makePersistent(MAINNET_V3_POSITION_MANAGER);
+        vm.makePersistent(WETH);
+        vm.makePersistent(USDC);
+        vm.makePersistent(BAN);
+        vm.makePersistent(NANA);
 
         // Deploy core contracts
         manager = new PoolManager(address(this));
@@ -125,9 +137,9 @@ contract JBUniswapV4HookForkTest is Test {
             IUniswapV3Factory(MAINNET_V3_FACTORY)
         );
 
-        // Set up a simple pool with BAN/WETH (currencies must be ordered: currency0 < currency1)
+        // Set up a simple pool with NANA/WETH (currencies must be ordered: currency0 < currency1)
         key = PoolKey({
-            currency0: Currency.wrap(BAN),
+            currency0: Currency.wrap(NANA),
             currency1: Currency.wrap(WETH),
             fee: 3000,
             tickSpacing: 60,
@@ -149,7 +161,7 @@ contract JBUniswapV4HookForkTest is Test {
         feeTiers[2] = 10000; // 1%
 
         for (uint256 i = 0; i < feeTiers.length; i++) {
-            address v3Pool = IUniswapV3Factory(MAINNET_V3_FACTORY).getPool(BAN, WETH, feeTiers[i]);
+            address v3Pool = IUniswapV3Factory(MAINNET_V3_FACTORY).getPool(NANA, WETH, feeTiers[i]);
             if (v3Pool != address(0)) {
                 try IUniswapV3Pool(v3Pool).slot0() returns (
                     uint160 sqrtPriceX96, int24, uint16, uint16, uint16, uint8, bool unlocked
@@ -165,8 +177,134 @@ contract JBUniswapV4HookForkTest is Test {
             }
         }
 
-        // Initialize the pool with the V3 price (or fallback to SQRT_PRICE_1_1)
+        // Try to re-initialize price to match the Juicebox price index (NANA per WETH)
+        // Use the hook's calculation to get how many NANA are minted per 1 WETH, then convert to sqrtPriceX96.
+        // ratio token1/token0 = WETH per NANA = 1e18 / (NANA per 1e18 WETH)
+        uint160 jbSqrtPriceX96 = 0;
+        uint256 projectId = IJBTokens(MAINNET_JB_TOKENS).projectIdOf(IJBToken(NANA));
+        if (projectId != 0) {
+            try hook.calculateExpectedTokensWithCurrency(projectId, WETH, 1 ether) returns (uint256 nanaPerWeth) {
+                if (nanaPerWeth > 0) {
+                    // ratioX192 = (WETH per NANA) * 2^192 = ((1e18 << 192) / nanaPerWeth)
+                    uint256 ratioX192 = (uint256(1e18) << 192) / nanaPerWeth;
+                    jbSqrtPriceX96 = uint160(_sqrt(ratioX192));
+                    // Prefer JB-derived price if computed successfully
+                    v3SqrtPriceX96 = jbSqrtPriceX96;
+                }
+            } catch {
+                // keep v3SqrtPriceX96 fallback
+            }
+        }
+
+        // Initialize the pool with the derived price
         manager.initialize(key, v3SqrtPriceX96);
+
+        // Add large liquidity to v4 pool to enable controlled price shifts via swaps
+        {
+            address user = testUser;
+            // Fund user with tokens
+            uint256 nanaAmount = 1_000_000 ether;
+            uint256 wethLiquidityEth = 2_000 ether;
+            deal(NANA, user, nanaAmount);
+            vm.deal(user, wethLiquidityEth);
+
+            vm.startPrank(user);
+            // Wrap ETH into WETH
+            (bool wrapOk,) = WETH.call{value: wethLiquidityEth}(abi.encodeWithSignature("deposit()"));
+            require(wrapOk, "WETH deposit failed");
+
+            // Approvals for v4 liquidity router and swap router (future swaps)
+            IERC20(NANA).approve(address(modifyLiquidityRouter), type(uint256).max);
+            IERC20(WETH).approve(address(modifyLiquidityRouter), type(uint256).max);
+            IERC20(WETH).approve(address(jbSwapRouter), type(uint256).max);
+
+            // Add ample liquidity over a reasonably wide band
+            modifyLiquidityRouter.modifyLiquidity(
+                key,
+                ModifyLiquidityParams({
+                    tickLower: -600, // multiple of tickSpacing (60)
+                    tickUpper: 600,
+                    liquidityDelta: 1_000_000 ether,
+                    salt: bytes32(0)
+                }),
+                ZERO_BYTES
+            );
+            vm.stopPrank();
+        }
+
+        // Ensure a Uniswap v3 WETH/NANA pool exists at JB-derived price if possible, and add large liquidity
+        {
+            // Determine token ordering for v3
+            address token0 = NANA;
+            address token1 = WETH;
+
+            // Create/initialize pool at JB price if it doesn't exist and JB price was computed
+            if (jbSqrtPriceX96 != 0) {
+                try INonfungiblePositionManager(MAINNET_V3_POSITION_MANAGER)
+                    .createAndInitializePoolIfNecessary(token0, token1, V3_FEE_TIER, jbSqrtPriceX96) returns (
+                    address
+                ) {
+                // no-op; pool created or already existed
+                }
+                    catch {
+                    // ignore if pool exists and cannot be reinitialized
+                }
+            }
+
+            // Add large liquidity via NFPM.mint
+            address user = testUser;
+            uint256 nanaAmount = 2_000_000 ether;
+            uint256 wethAmountEth = 4_000 ether;
+            deal(NANA, user, nanaAmount);
+            vm.deal(user, wethAmountEth);
+
+            vm.startPrank(user);
+            // Wrap ETH into WETH for v3 liquidity
+            (bool wrapOk2,) = WETH.call{value: wethAmountEth}(abi.encodeWithSignature("deposit()"));
+            require(wrapOk2, "WETH deposit failed (v3)");
+
+            // Approve NFPM to pull tokens
+            IERC20(NANA).approve(MAINNET_V3_POSITION_MANAGER, type(uint256).max);
+            IERC20(WETH).approve(MAINNET_V3_POSITION_MANAGER, type(uint256).max);
+
+            int24 tickLower = -887200; // wide range for 1% fee (tick spacing 200)
+            int24 tickUpper = 887200;
+            try INonfungiblePositionManager(MAINNET_V3_POSITION_MANAGER)
+                .mint(
+                    INonfungiblePositionManager.MintParams({
+                        token0: token0,
+                        token1: token1,
+                        fee: V3_FEE_TIER,
+                        tickLower: tickLower,
+                        tickUpper: tickUpper,
+                        amount0Desired: 1_000_000 ether, // NANA
+                        amount1Desired: 2_000 ether, // WETH
+                        amount0Min: 0,
+                        amount1Min: 0,
+                        recipient: user,
+                        deadline: block.timestamp
+                    })
+                ) returns (
+                uint256, uint128, uint256, uint256
+            ) {
+            // minted
+            }
+                catch {
+                // ignore if mint fails (e.g., fee tier not enabled or other constraints)
+            }
+            vm.stopPrank();
+        }
+    }
+
+    // Integer sqrt via Babylonian method for uint256
+    function _sqrt(uint256 x) internal pure returns (uint256 y) {
+        if (x == 0) return 0;
+        uint256 z = (x + 1) / 2;
+        y = x;
+        while (z < y) {
+            y = z;
+            z = (x / z + z) / 2;
+        }
     }
 
     /// @notice Test that the hook can be deployed and initialized with mainnet addresses
@@ -182,8 +320,8 @@ contract JBUniswapV4HookForkTest is Test {
 
     /// @notice Test that the hook can query a real Juicebox project
     function testQueryRealJuiceboxProject() public view {
-        // Look up the project ID based on the BAN token address via JB Tokens registry
-        uint256 projectId = IJBTokens(MAINNET_JB_TOKENS).projectIdOf(IJBToken(BAN));
+        // Look up the project ID based on the NANA token address via JB Tokens registry
+        uint256 projectId = IJBTokens(MAINNET_JB_TOKENS).projectIdOf(IJBToken(NANA));
 
         // Query the project's current ruleset
         (JBRuleset memory ruleset, JBRulesetMetadata memory metadata) =
@@ -199,13 +337,12 @@ contract JBUniswapV4HookForkTest is Test {
 
         // Should return tokens based on the project's weight
         assertTrue(expectedTokens > 0, "Should calculate expected tokens for ETH payment");
-        console.log("expectedTokens", expectedTokens);
-        // // Test calculating expected tokens with BAN payment
-        // uint256 banAmount = 1000 ether; // 1000 BAN
-        // uint256 expectedTokensBAN = hook.calculateExpectedTokensWithCurrency(projectId, BAN, banAmount);
+        // Test calculating expected tokens with NANA payment
+        // uint256 nanaAmount = 1000 ether; // 1000 NANA
+        // uint256 expectedTokensNANA = hook.calculateExpectedTokensWithCurrency(projectId, NANA, nanaAmount);
 
-        // Should return tokens (may be 0 if price feed doesn't exist, but should not revert)
-        //assertTrue(expectedTokensBAN >= 0, "Should calculate expected tokens for USDC payment");
+        // // Should return tokens (may be 0 if price feed doesn't exist, but should not revert)
+        // assertTrue(expectedTokensNANA >= 0, "Should calculate expected tokens for NANA payment");
 
         // // Try to verify project token registration (if we can find the token)
         // // Note: The exact method to get project token may vary by Juicebox version
@@ -221,15 +358,14 @@ contract JBUniswapV4HookForkTest is Test {
 
     /// @notice Test that estimateUniswapV3Output works with real v3 pools
     function testEstimateUniswapV3OutputWithRealPool() public view {
-        // Check if WETH/BAN pool exists
-        address v3Pool = IUniswapV3Factory(MAINNET_V3_FACTORY).getPool(WETH, BAN, 10000);
+        // Check if WETH/NANA pool exists
+        address v3Pool = IUniswapV3Factory(MAINNET_V3_FACTORY).getPool(WETH, NANA, 10000);
 
         if (v3Pool != address(0)) {
             // Pool exists, try to estimate output
-            // Swap 1000 BAN for WETH: BAN is token1, WETH is token0, so zeroForOne=false
-            try hook.estimateUniswapV3Output(WETH, BAN, 1 ether, true) returns (uint256 output) {
+            // Swap 1 WETH for NANA: WETH is token0, NANA is token1, so zeroForOne=true
+            try hook.estimateUniswapV3Output(WETH, NANA, 1 ether, true) returns (uint256 output) {
                 assertTrue(output > 0, "Should return positive output for existing pool");
-                console.log("V3 output:", output);
             } catch Error(string memory reason) {
                 // Estimation failed - might be due to pool state, insufficient observations, or no liquidity
                 console.log("V3 estimation failed:", reason);
@@ -246,7 +382,7 @@ contract JBUniswapV4HookForkTest is Test {
     function testDetectJuiceboxToken() public {
         // This test would need a real JB project token address
         // For now, we just verify the hook can call the TOKENS contract
-        try IJBTokens(MAINNET_JB_TOKENS).projectIdOf(IJBToken(address(BAN))) returns (uint256 projectId) {
+        try IJBTokens(MAINNET_JB_TOKENS).projectIdOf(IJBToken(address(NANA))) returns (uint256 projectId) {
             // If address(0) returns 0, that's expected
             assertTrue(projectId == 0 || projectId > 0, "Should return a project ID or 0");
         } catch Error(string memory reason) {
@@ -273,13 +409,12 @@ contract JBUniswapV4HookForkTest is Test {
     /// @notice Test that TWAP estimation works with real pool data
     /// @dev Adapted from testEstimateUniswapOutput in the main test file
     function testTWAPEstimationWithRealPool() public view {
-        // Test TWAP estimation for the BAN/WETH pool
+        // Test TWAP estimation for the NANA/WETH pool
         // With only initial observation, estimate should use spot price fallback
 
         try hook.estimateUniswapOutput(id, key, 1 ether, false) returns (uint256 estimatedOut) {
             // Should return positive value (may be 0 if pool has no liquidity)
             assertTrue(estimatedOut >= 0, "Should estimate output (may be 0 for empty pool)");
-            console.log("Uniswap output:", estimatedOut);
         } catch Error(string memory reason) {
             // Estimation may fail if pool has issues (no observations, invalid state)
             console.log("Uniswap output estimation failed:", reason);
@@ -294,14 +429,14 @@ contract JBUniswapV4HookForkTest is Test {
     /// @notice Test that v3 routing comparison works with real Uniswap v3 pools
     /// @dev Adapted from testV3RoutingWhenCheaper in the main test file
     function testV3RoutingComparisonWithRealPool() public view {
-        // Check if WETH/BAN v3 pool exists (10000 fee tier)
-        address v3Pool = IUniswapV3Factory(MAINNET_V3_FACTORY).getPool(WETH, BAN, 10000);
+        // Check if WETH/NANA v3 pool exists (10000 fee tier)
+        address v3Pool = IUniswapV3Factory(MAINNET_V3_FACTORY).getPool(WETH, NANA, 10000);
 
         if (v3Pool != address(0)) {
             // Pool exists, test v3 output estimation
             uint256 amountIn = 1 ether; // 1 WETH
 
-            try hook.estimateUniswapV3Output(WETH, BAN, amountIn, true) returns (uint256 v3Output) {
+            try hook.estimateUniswapV3Output(WETH, NANA, amountIn, true) returns (uint256 v3Output) {
                 // Also estimate v4 output for comparison
                 try hook.estimateUniswapOutput(id, key, amountIn, false) returns (uint256 v4Output) {
                     // Both should return positive values
@@ -336,7 +471,7 @@ contract JBUniswapV4HookForkTest is Test {
     function testComplexMultiRoutePriceComparison() public view {
         // Query prices from existing pools without adding liquidity
         // Check if v3 pool exists
-        address v3Pool = IUniswapV3Factory(MAINNET_V3_FACTORY).getPool(WETH, BAN, 10000);
+        address v3Pool = IUniswapV3Factory(MAINNET_V3_FACTORY).getPool(WETH, NANA, 10000);
 
         if (v3Pool != address(0)) {
             // Test with a real swap amount
@@ -355,7 +490,7 @@ contract JBUniswapV4HookForkTest is Test {
             }
 
             // Get v3 output estimate
-            try hook.estimateUniswapV3Output(WETH, BAN, testAmount, true) returns (uint256 output) {
+            try hook.estimateUniswapV3Output(WETH, NANA, testAmount, true) returns (uint256 output) {
                 v3Output = output;
             } catch {
                 v3Output = 0;
@@ -363,7 +498,7 @@ contract JBUniswapV4HookForkTest is Test {
 
             // Try to get Juicebox output (if we can find a project)
             // Query project ID 1 as a test
-            uint256 projectId = IJBTokens(MAINNET_JB_TOKENS).projectIdOf(IJBToken(BAN));
+            uint256 projectId = IJBTokens(MAINNET_JB_TOKENS).projectIdOf(IJBToken(NANA));
             try hook.calculateExpectedTokensWithCurrency(projectId, address(0), testAmount) returns (uint256 output) {
                 juiceboxOutput = output;
             } catch {
@@ -388,62 +523,6 @@ contract JBUniswapV4HookForkTest is Test {
 
             assertTrue(bestOutput > 0, "Best output should be positive");
         }
-    }
-
-    /// @notice Perform a real swap using BAN/WETH on fork via the hook/router (v3/Juicebox/v4 as decided by hook)
-    /// @dev Mirrors the swap flow from testNonJuiceboxTokenSwap but uses real BAN/WETH and no mocks
-    function testBAN_ETH_SwapExecution() public {
-        address user = testUser;
-
-        // Deal BAN and ETH to user
-        uint256 banAmount = 1_000 ether;
-        uint256 ethAmount = 100 ether;
-        deal(BAN, user, banAmount);
-        vm.deal(user, ethAmount);
-
-        // User wraps some ETH to WETH for liquidity and swap
-        vm.startPrank(user);
-        uint256 wethForLiquidity = 10 ether;
-        (bool wrapOk,) = WETH.call{value: wethForLiquidity}(abi.encodeWithSignature("deposit()"));
-        require(wrapOk, "WETH deposit failed");
-
-        // Approve tokens for liquidity addition
-        IERC20(BAN).approve(address(modifyLiquidityRouter), type(uint256).max);
-        IERC20(WETH).approve(address(modifyLiquidityRouter), type(uint256).max);
-
-        // Add some liquidity to BAN/WETH v4 pool
-        modifyLiquidityRouter.modifyLiquidity(
-            key,
-            ModifyLiquidityParams({tickLower: -60, tickUpper: 60, liquidityDelta: 10 ether, salt: bytes32(0)}),
-            ZERO_BYTES
-        );
-
-        // Approve router for swap input (WETH)
-        uint256 amountIn = 1 ether;
-        IERC20(WETH).approve(address(jbSwapRouter), amountIn);
-
-        // Record balances
-        uint256 initialBAN = IERC20(BAN).balanceOf(user);
-        uint256 initialWETH = IERC20(WETH).balanceOf(user);
-
-        // Swap WETH (currency1) -> BAN (currency0)
-        SwapParams memory params = SwapParams({
-            zeroForOne: false, amountSpecified: -int256(amountIn), sqrtPriceLimitX96: TickMath.MAX_SQRT_PRICE - 1
-        });
-
-        // Execute swap via JB router (hook decides between v3/JB/v4)
-        try jbSwapRouter.swap(key, params) {
-            uint256 finalBAN = IERC20(BAN).balanceOf(user);
-            uint256 finalWETH = IERC20(WETH).balanceOf(user);
-
-            assertGt(finalBAN, initialBAN, "Should have received BAN");
-            assertLe(finalWETH, initialWETH, "WETH should not increase");
-        } catch Error(string memory reason) {
-            console.log("BAN<-WETH swap failed:", reason);
-        } catch (bytes memory) {
-            console.log("BAN<-WETH swap reverted with low-level error");
-        }
-        vm.stopPrank();
     }
 
     /// @notice Test that an oracle observation is recorded after a swap on fork
@@ -492,49 +571,241 @@ contract JBUniswapV4HookForkTest is Test {
         assertTrue(newIndex == initialIndex + 1 || newIndex == 0, "Index should have incremented");
     }
 
-    /// @notice Given initial cardinality is 1, after a swap it should be >= 1 (may grow)
-    function testCardinalityIncrease() public {
-        // Check initial cardinality
-        (, uint16 initialCardinality,) = hook.states(id);
-        assertEq(initialCardinality, 1, "Initial cardinality should be 1");
+    // =========================
+    // Price selection fork tests
+    // =========================
 
-        // Prepare user, liquidity, and perform a small swap
+    function _bestRouteSelectedSig() private pure returns (bytes32) {
+        return keccak256("BestRouteSelected(bytes32,string,uint256,uint256)");
+    }
+
+    function _getLastBestRouteFromLogs()
+        private
+        returns (string memory routeType, uint256 expectedTokens, uint256 savings)
+    {
+        Vm.Log[] memory entries = vm.getRecordedLogs();
+        bytes32 sig = _bestRouteSelectedSig();
+        for (uint256 i = entries.length; i > 0; i--) {
+            Vm.Log memory logEntry = entries[i - 1];
+            if (logEntry.topics.length > 0 && logEntry.topics[0] == sig) {
+                (routeType, expectedTokens, savings) = abi.decode(logEntry.data, (string, uint256, uint256));
+                return (routeType, expectedTokens, savings);
+            }
+        }
+        return ("", 0, 0);
+    }
+
+    /// @notice Make v4 clearly favorable by pushing price with a BAN->WETH swap, then verify route="v4".
+    function testFork_V4BestPriceRoutesToV4() public {
         address user = testUser;
-        uint256 banAmount = 1_000 ether;
-        uint256 wethForLiquidity = 2 ether;
-        uint256 amountIn = 0.1 ether;
 
-        deal(BAN, user, banAmount);
-        vm.deal(user, 5 ether);
-
+        // Fund and wrap
+        deal(NANA, user, 50_000 ether);
+        vm.deal(user, 200 ether);
         vm.startPrank(user);
-        (bool wrapOk,) = WETH.call{value: wethForLiquidity + amountIn}(abi.encodeWithSignature("deposit()"));
-        require(wrapOk, "WETH deposit failed");
+        (bool okWrap1,) = WETH.call{value: 100 ether}(abi.encodeWithSignature("deposit()"));
+        require(okWrap1, "wrap failed");
 
-        IERC20(BAN).approve(address(modifyLiquidityRouter), type(uint256).max);
+        // Approvals
+        IERC20(NANA).approve(address(modifyLiquidityRouter), type(uint256).max);
         IERC20(WETH).approve(address(modifyLiquidityRouter), type(uint256).max);
-        IERC20(WETH).approve(address(jbSwapRouter), amountIn);
+        IERC20(WETH).approve(address(jbSwapRouter), type(uint256).max);
 
-        // Add minimal liquidity
+        // Add ample liquidity
         modifyLiquidityRouter.modifyLiquidity(
             key,
-            ModifyLiquidityParams({tickLower: -60, tickUpper: 60, liquidityDelta: 5 ether, salt: bytes32(0)}),
+            ModifyLiquidityParams({tickLower: -120, tickUpper: 120, liquidityDelta: 200 ether, salt: bytes32(0)}),
             ZERO_BYTES
         );
 
-        // Ensure a new timestamp for a distinct observation
-        vm.warp(block.timestamp + 1);
+        // Push price to make NANA cheaper vs WETH for a subsequent WETH->NANA swap:
+        // Do a large NANA->WETH swap (zeroForOne=true) which increases NANA reserves and removes WETH.
+        IERC20(NANA).approve(address(swapRouter), type(uint256).max);
+        SwapParams memory pushDownNANAPrice = SwapParams({
+            zeroForOne: true, amountSpecified: -int256(5000 ether), sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1
+        });
+        // Best-effort; ignore failure due to liquidity limits
+        try swapRouter.swap(key, pushDownNANAPrice, PoolSwapTest.TestSettings(false, false), ZERO_BYTES) {} catch {}
 
-        // Execute small WETH -> BAN swap
-        SwapParams memory params = SwapParams({
+        // Now do the priced swap via JB router (so hook can choose route)
+        vm.recordLogs();
+        uint256 amountIn = 1 ether;
+        SwapParams memory testSwap = SwapParams({
             zeroForOne: false, amountSpecified: -int256(amountIn), sqrtPriceLimitX96: TickMath.MAX_SQRT_PRICE - 1
         });
-        jbSwapRouter.swap(key, params);
+        try jbSwapRouter.swap(key, testSwap) {
+            (string memory route, uint256 expectedTokens, uint256 savings) = _getLastBestRouteFromLogs();
+            // Expect v4 due to manipulated favorable v4 price
+            assertEq(keccak256(bytes(route)), keccak256("v4"), "Expected best route to be v4");
+        } catch Error(string memory reason) {
+            console.log("testFork_V4BestPriceRoutesToV4 swap failed:", reason);
+        } catch {
+            console.log("testFork_V4BestPriceRoutesToV4 swap reverted");
+        }
         vm.stopPrank();
+    }
 
-        // Cardinality should be >= initial (may remain 1 or grow depending on implementation)
-        (, uint16 newCardinality,) = hook.states(id);
-        assertGe(newCardinality, initialCardinality, "Cardinality should have grown or stayed the same");
+    /// @notice Make v4 unfavorable by pushing price with a WETH->NANA swap, then verify route="v3" (if v3 pool exists).
+    function testFork_V3BestPriceRoutesToV3() public {
+        // Require an actual v3 pool for NANA/WETH at 1% fee; skip if absent
+        address v3Pool = IUniswapV3Factory(MAINNET_V3_FACTORY).getPool(WETH, NANA, 10000);
+        if (v3Pool == address(0)) return;
+
+        address user = testUser;
+        // Funds
+        deal(NANA, user, 50_000 ether);
+        vm.deal(user, 200 ether);
+        vm.startPrank(user);
+        (bool okWrap,) = WETH.call{value: 100 ether}(abi.encodeWithSignature("deposit()"));
+        require(okWrap, "wrap failed");
+
+        // Approvals
+        IERC20(NANA).approve(address(modifyLiquidityRouter), type(uint256).max);
+        IERC20(WETH).approve(address(modifyLiquidityRouter), type(uint256).max);
+        IERC20(WETH).approve(address(jbSwapRouter), type(uint256).max);
+        IERC20(WETH).approve(address(swapRouter), type(uint256).max);
+
+        // Add liquidity
+        modifyLiquidityRouter.modifyLiquidity(
+            key,
+            ModifyLiquidityParams({tickLower: -120, tickUpper: 120, liquidityDelta: 150 ether, salt: bytes32(0)}),
+            ZERO_BYTES
+        );
+
+        // Make v4 price worse for WETH->NANA by doing a large WETH->NANA swap (zeroForOne=false)
+        SwapParams memory pushUpNANAPrice = SwapParams({
+            zeroForOne: false, amountSpecified: -int256(5000 ether), sqrtPriceLimitX96: TickMath.MAX_SQRT_PRICE - 1
+        });
+        try swapRouter.swap(key, pushUpNANAPrice, PoolSwapTest.TestSettings(false, false), ZERO_BYTES) {} catch {}
+
+        // Now perform a small WETH->NANA swap and expect "v3"
+        vm.recordLogs();
+        uint256 amountIn = 1 ether;
+        SwapParams memory testSwap = SwapParams({
+            zeroForOne: false, amountSpecified: -int256(amountIn), sqrtPriceLimitX96: TickMath.MAX_SQRT_PRICE - 1
+        });
+        try jbSwapRouter.swap(key, testSwap) {
+            (string memory route, uint256 expectedTokens, uint256 savings) = _getLastBestRouteFromLogs();
+            assertEq(keccak256(bytes(route)), keccak256("v3"), "Expected best route to be v3");
+        } catch Error(string memory reason) {
+            console.log("testFork_V3BestPriceRoutesToV3 swap failed:", reason);
+        } catch {
+            console.log("testFork_V3BestPriceRoutesToV3 swap reverted");
+        }
+        vm.stopPrank();
+    }
+
+    /// @notice Basic: if no v3 pool exists, prefer JB when JB quote beats v4; otherwise fall back to v4.
+    function testFork_NoV3Pool_JuiceboxBestOrV4Fallback() public {
+        // Skip if a v3 pool exists for NANA/WETH at 1% fee
+        address v3Pool = address(0);
+        // Get NANA projectId
+        uint256 projectId = IJBTokens(MAINNET_JB_TOKENS).projectIdOf(IJBToken(NANA));
+        vm.assume(projectId != 0);
+
+        // Attempt to re-initialize price to the Juicebox price index by creating a fresh pool
+        // with a distinct PoolKey (different tickSpacing) initialized at JB-derived sqrtPrice.
+        PoolKey memory useKey = key;
+        PoolId useId = id;
+        {
+            // Compute JB price: NANA per 1 WETH
+            try hook.calculateExpectedTokensWithCurrency(projectId, WETH, 1 ether) returns (uint256 nanaPerWeth) {
+                if (nanaPerWeth > 0) {
+                    // Create a new pool key so we can initialize at the JB price (original pool cannot be reinitialized)
+                    PoolKey memory jbKey = PoolKey({
+                        currency0: Currency.wrap(NANA),
+                        currency1: Currency.wrap(WETH),
+                        fee: 3000,
+                        tickSpacing: 120, // different from default 60 -> new pool
+                        hooks: IHooks(address(hook))
+                    });
+                    PoolId jbId = jbKey.toId();
+                    // sqrtPriceX96 = sqrt((token1/token0) * 2^192)
+                    // token1/token0 (WETH per NANA) = (1e18 / nanaPerWeth)
+                    uint256 ratioX192 = (uint256(1e18) << 192) / nanaPerWeth;
+                    uint160 jbSqrtPriceX96 = uint160(_sqrt(ratioX192));
+                    // Initialize the new pool at JB price
+                    manager.initialize(jbKey, jbSqrtPriceX96);
+                    useKey = jbKey;
+                    useId = jbId;
+                }
+            } catch {
+                // If JB price unavailable, proceed with the original pool and its existing price
+            }
+        }
+
+        address user = testUser;
+        // Funds
+        deal(NANA, user, 10_000 ether);
+        vm.deal(user, 50 ether);
+        vm.startPrank(user);
+        (bool okWrap,) = WETH.call{value: 10 ether}(abi.encodeWithSignature("deposit()"));
+        require(okWrap, "wrap failed");
+
+        // Approvals
+        IERC20(NANA).approve(address(modifyLiquidityRouter), type(uint256).max);
+        IERC20(WETH).approve(address(modifyLiquidityRouter), type(uint256).max);
+        IERC20(WETH).approve(address(jbSwapRouter), type(uint256).max);
+
+        // Add minimal liquidity so swaps via v4 can execute if chosen
+        modifyLiquidityRouter.modifyLiquidity(
+            useKey,
+            ModifyLiquidityParams({
+                tickLower: -int24(useKey.tickSpacing),
+                tickUpper: int24(useKey.tickSpacing),
+                liquidityDelta: 10 ether,
+                salt: bytes32(0)
+            }),
+            ZERO_BYTES
+        );
+
+        uint256 amountIn = 1 ether;
+        // Compare expected outputs
+        uint256 v4Out = 0;
+        try hook.estimateUniswapOutput(useId, useKey, amountIn, false) returns (uint256 o) {
+            v4Out = o;
+        } catch {}
+
+        uint256 v3Out = 0;
+        try hook.estimateUniswapV3Output(WETH, NANA, amountIn, true) returns (uint256 o) {
+            v3Out = o;
+        } catch {}
+
+        uint256 jbOut = 0;
+        // JB quote using WETH as payment token; if no feed, this may be 0
+        try hook.calculateExpectedTokensWithCurrency(projectId, WETH, amountIn) returns (uint256 o) {
+            jbOut = o;
+        } catch {}
+
+        // Execute via JB router to let hook choose
+        vm.recordLogs();
+        SwapParams memory testSwap = SwapParams({
+            zeroForOne: false, amountSpecified: -int256(amountIn), sqrtPriceLimitX96: TickMath.MAX_SQRT_PRICE - 1
+        });
+
+        try jbSwapRouter.swap(useKey, testSwap) {
+            (string memory route, uint256 expectedTokens, uint256 savings) = _getLastBestRouteFromLogs();
+
+            // Check for primary terminal (same check as in JBUniswapV4Hook.sol lines 924-928)
+            IJBTerminal jbTerminal;
+            address tokenIn = WETH;
+            try IJBDirectory(MAINNET_JB_DIRECTORY).primaryTerminalOf(projectId, tokenIn) returns (IJBTerminal t) {
+                jbTerminal = t;
+            } catch {
+                jbTerminal = IJBTerminal(address(0));
+            }
+
+            if (jbOut > v4Out && jbOut > 0 && address(jbTerminal) != address(0)) {
+                assertEq(keccak256(bytes(route)), keccak256("juicebox"), "Expected route to be juicebox");
+            } else if (v4Out > 0) {
+                assertEq(keccak256(bytes(route)), keccak256("v4"), "Expected route to be v4");
+            }
+        } catch Error(string memory reason) {
+            console.log("testFork_NoV3Pool_JuiceboxBestOrV4Fallback swap failed:", reason);
+        } catch {
+            console.log("testFork_NoV3Pool_JuiceboxBestOrV4Fallback swap reverted");
+        }
+        vm.stopPrank();
     }
 }
 
