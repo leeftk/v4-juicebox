@@ -83,9 +83,33 @@ forge test --match-test testFuzz_TWAP
 # Run security tests
 forge test --match-test "testFuzz_PriceManipulation|testFuzz_FrontRunning"
 
+# Run fork tests (requires mainnet RPC)
+forge test --match-contract JBUniswapV4HookForkTest
+
 # Generate gas report
 forge test --gas-report
 ```
+
+### Fork Tests
+
+Fork tests use real mainnet contracts and require a mainnet RPC endpoint:
+
+```bash
+# Optionally set your RPC URL (recommended for reliable testing)
+export MAINNET_RPC_URL=https://eth-mainnet.g.alchemy.com/v2/YOUR_KEY
+
+# Or use a public RPC (may have rate limits)
+# Defaults to https://ethereum-rpc.publicnode.com if MAINNET_RPC_URL is not set
+
+# Run fork tests
+forge test --match-contract JBUniswapV4HookForkTest
+```
+
+**Note:** Public RPC endpoints may rate limit. For reliable fork testing, use your own RPC endpoint from providers like:
+- [Alchemy](https://www.alchemy.com/)
+- [Infura](https://www.infura.io/)
+- [QuickNode](https://www.quicknode.com/)
+- [Ankr](https://www.ankr.com/)
 
 ## Deployment
 

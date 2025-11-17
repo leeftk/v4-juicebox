@@ -43,9 +43,12 @@ import {INonfungiblePositionManager} from "../lib/v3-periphery/contracts/interfa
 /// @title JBUniswapV4HookForkTest
 /// @notice Fork tests using mainnet addresses
 /// @dev To run these tests:
-///      1. Set MAINNET_RPC_URL in your .env file (e.g., MAINNET_RPC_URL=https://eth-mainnet.g.alchemy.com/v2/YOUR_KEY)
-///      2. Run: forge test --match-contract JBUniswapV4HookForkTest --fork-url $MAINNET_RPC_URL -vv
+///      1. Optionally set MAINNET_RPC_URL in your .env file (e.g., MAINNET_RPC_URL=https://eth-mainnet.g.alchemy.com/v2/YOUR_KEY)
+///         If not set, defaults to https://ethereum-rpc.publicnode.com (public RPC, may have rate limits)
+///         For reliable testing, use your own RPC endpoint (Alchemy, Infura, QuickNode, etc.)
+///      2. Run: forge test --match-contract JBUniswapV4HookForkTest -vv
 /// @dev These tests use real mainnet contracts, so they require a mainnet RPC endpoint
+/// @dev Note: Public RPC endpoints may rate limit. If tests fail with 429 errors, set MAINNET_RPC_URL to your own endpoint
 contract JBUniswapV4HookForkTest is Test {
     using PoolIdLibrary for PoolKey;
     using CurrencyLibrary for Currency;
@@ -84,9 +87,24 @@ contract JBUniswapV4HookForkTest is Test {
     // Test user with mainnet ETH
     address testUser = address(0xBEEF);
 
+    // Default RPC URL - can be overridden by setting MAINNET_RPC_URL environment variable
+    // Note: Public RPCs may have rate limits. For reliable testing, set MAINNET_RPC_URL to your own RPC endpoint
+    string constant DEFAULT_MAINNET_RPC = "https://ethereum-rpc.publicnode.com";
+
+    /// @notice Get RPC URL from environment variable or use default
+    function _getRpcUrl() internal view returns (string memory) {
+        try vm.envString("MAINNET_RPC_URL") returns (string memory rpcUrl) {
+            return rpcUrl;
+        } catch {
+            return DEFAULT_MAINNET_RPC;
+        }
+    }
+
     function setUp() public {
         // Fork mainnet at a recent block
-        uint256 forkId = vm.createFork(vm.envString("MAINNET_RPC_URL"));
+        // Use MAINNET_RPC_URL env var if set, otherwise use default public RPC
+        string memory rpcUrl = _getRpcUrl();
+        uint256 forkId = vm.createFork(rpcUrl);
         vm.selectFork(forkId);
 
         // Mark mainnet contracts as persistent so they can be called in fork tests
