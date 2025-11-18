@@ -607,9 +607,11 @@ contract JuiceboxHookTest is Test {
         // Deploy the hook with proper address mining
         // Calculate the required flags for the hook permissions
         // afterInitialize = true, beforeSwap = true, afterSwap = true, beforeSwapReturnDelta = true
+        // afterAddLiquidity = true, afterRemoveLiquidity = true
         uint160 flags = uint160(
             Hooks.AFTER_INITIALIZE_FLAG | Hooks.BEFORE_SWAP_FLAG | Hooks.AFTER_SWAP_FLAG
-                | Hooks.BEFORE_SWAP_RETURNS_DELTA_FLAG
+                | Hooks.BEFORE_SWAP_RETURNS_DELTA_FLAG | Hooks.AFTER_ADD_LIQUIDITY_FLAG
+                | Hooks.AFTER_REMOVE_LIQUIDITY_FLAG
         );
 
         // Prepare constructor arguments
@@ -878,9 +880,9 @@ contract JuiceboxHookTest is Test {
         assertFalse(permissions.beforeInitialize, "Should not have beforeInitialize permission");
         assertTrue(permissions.afterInitialize, "Should have afterInitialize permission for oracle");
         assertFalse(permissions.beforeAddLiquidity, "Should not have beforeAddLiquidity permission");
-        assertFalse(permissions.afterAddLiquidity, "Should not have afterAddLiquidity permission");
+        assertTrue(permissions.afterAddLiquidity, "Should have afterAddLiquidity permission for oracle observations");
         assertFalse(permissions.beforeRemoveLiquidity, "Should not have beforeRemoveLiquidity permission");
-        assertFalse(permissions.afterRemoveLiquidity, "Should not have afterRemoveLiquidity permission");
+        assertTrue(permissions.afterRemoveLiquidity, "Should have afterRemoveLiquidity permission for oracle observations");
         assertTrue(permissions.beforeSwap, "Should have beforeSwap permission");
         assertTrue(permissions.afterSwap, "Should have afterSwap permission for oracle observations");
         assertFalse(permissions.beforeDonate, "Should not have beforeDonate permission");
@@ -958,11 +960,14 @@ contract JuiceboxHookTest is Test {
     /// And the cardinalityNext should be 1
     function testOracleInitialization() public view {
         // Check that oracle was initialized during pool setup
+        // Note: After adding liquidity in setUp(), the afterAddLiquidity hook records an observation
+        // which grows cardinalityNext from 1 to 2 (since we were at capacity: index 0, cardinality 1)
+        // However, if the block timestamp hasn't changed, Oracle.write() returns early without updating the index
         (uint16 index, uint16 cardinality, uint16 cardinalityNext) = hook.states(id);
 
-        assertEq(index, 0, "Initial index should be 0");
-        assertEq(cardinality, 1, "Initial cardinality should be 1");
-        assertEq(cardinalityNext, 1, "Initial cardinalityNext should be 1");
+        assertEq(index, 0, "Index should be 0 (unchanged if same block timestamp)");
+        assertEq(cardinality, 1, "Cardinality should still be 1 (not updated if same block timestamp)");
+        assertEq(cardinalityNext, 2, "CardinalityNext should be 2 after growing from initial 1");
     }
 
     /// Given the initial oracle index is recorded

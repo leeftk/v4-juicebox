@@ -90,7 +90,7 @@ contract JBUniswapV4HookForkTest is Test {
 
     // Default RPC URL - can be overridden by setting MAINNET_RPC_URL environment variable
     // Note: Public RPCs may have rate limits. For reliable testing, set MAINNET_RPC_URL to your own RPC endpoint
-    string constant DEFAULT_MAINNET_RPC = "https://eth-mainnet.g.alchemy.com/v2/Z1QKz_KCVFbuBVkAcdYFf";
+    string constant DEFAULT_MAINNET_RPC = "";
 
     /// @notice Get RPC URL from environment variable or use default
     function _getRpcUrl() internal view returns (string memory) {
@@ -131,7 +131,8 @@ contract JBUniswapV4HookForkTest is Test {
         // Deploy the hook with mainnet addresses
         uint160 flags = uint160(
             Hooks.AFTER_INITIALIZE_FLAG | Hooks.BEFORE_SWAP_FLAG | Hooks.AFTER_SWAP_FLAG
-                | Hooks.BEFORE_SWAP_RETURNS_DELTA_FLAG
+                | Hooks.BEFORE_SWAP_RETURNS_DELTA_FLAG | Hooks.AFTER_ADD_LIQUIDITY_FLAG
+                | Hooks.AFTER_REMOVE_LIQUIDITY_FLAG
         );
 
         bytes memory constructorArgs = abi.encode(
@@ -417,11 +418,14 @@ contract JBUniswapV4HookForkTest is Test {
     /// @notice Test that oracle initialization works
     function testOracleInitialization() public view {
         // Check that oracle was initialized during pool setup
+        // Note: After adding liquidity in setUp(), the afterAddLiquidity hook records an observation
+        // which grows cardinalityNext from 1 to 2 (since we were at capacity: index 0, cardinality 1)
+        // However, if the block timestamp hasn't changed, Oracle.write() returns early without updating the index
         (uint16 index, uint16 cardinality, uint16 cardinalityNext) = hook.states(id);
 
-        assertEq(index, 0, "Initial index should be 0");
-        assertEq(cardinality, 1, "Initial cardinality should be 1");
-        assertEq(cardinalityNext, 1, "Initial cardinalityNext should be 1");
+        assertEq(index, 0, "Index should be 0 (unchanged if same block timestamp)");
+        assertEq(cardinality, 1, "Cardinality should still be 1 (not updated if same block timestamp)");
+        assertEq(cardinalityNext, 2, "CardinalityNext should be 2 after growing from initial 1");
     }
 
     /// @notice Test that TWAP estimation works with real pool data

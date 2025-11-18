@@ -148,16 +148,6 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
     /// @notice Emitted when a routing decision is made
     event RouteSelected(PoolId indexed poolId, bool useJuicebox, uint256 expectedTokens);
 
-    /// @notice Emitted when v3 pool prices are compared
-    event V3PriceComparison(
-        address indexed token0,
-        address indexed token1,
-        uint256 v3Price,
-        uint256 v4Price,
-        bool v3Cheaper,
-        uint256 priceDifference
-    );
-
     /// @notice Emitted when the best route is selected among v3, v4, and Juicebox
     event BestRouteSelected(
         PoolId indexed poolId,
@@ -1002,16 +992,6 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
 
         // Compare v3 vs v4 prices
         bool v3BetterThanV4 = uniswapV3ExpectedTokens > uniswapV4ExpectedTokens;
-        emit V3PriceComparison(
-            tokenIn,
-            tokenOut,
-            uniswapV3ExpectedTokens,
-            uniswapV4ExpectedTokens,
-            v3BetterThanV4,
-            v3BetterThanV4
-                ? uniswapV3ExpectedTokens - uniswapV4ExpectedTokens
-                : uniswapV4ExpectedTokens - uniswapV3ExpectedTokens
-        );
 
         // Determine the best option among v3, v4, and Juicebox
         uint256 bestExpectedTokens = uniswapV4ExpectedTokens;
