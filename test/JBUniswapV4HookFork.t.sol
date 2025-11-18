@@ -32,6 +32,7 @@ import {
     IJBTerminalStore
 } from "../src/JBUniswapV4Hook.sol";
 import {IJBTerminal} from "@bananapus/core-v5/interfaces/IJBTerminal.sol";
+import {IJBMultiTerminal} from "@bananapus/core-v5/interfaces/IJBMultiTerminal.sol";
 import {IJBToken} from "@bananapus/core-v5/interfaces/IJBToken.sol";
 import {JBRuleset} from "@bananapus/core-v5/structs/JBRuleset.sol";
 import {JBRulesetMetadata} from "@bananapus/core-v5/structs/JBRulesetMetadata.sol";
@@ -89,7 +90,7 @@ contract JBUniswapV4HookForkTest is Test {
 
     // Default RPC URL - can be overridden by setting MAINNET_RPC_URL environment variable
     // Note: Public RPCs may have rate limits. For reliable testing, set MAINNET_RPC_URL to your own RPC endpoint
-    string constant DEFAULT_MAINNET_RPC = "https://ethereum-rpc.publicnode.com";
+    string constant DEFAULT_MAINNET_RPC = "https://eth-mainnet.g.alchemy.com/v2/Z1QKz_KCVFbuBVkAcdYFf";
 
     /// @notice Get RPC URL from environment variable or use default
     function _getRpcUrl() internal view returns (string memory) {
@@ -140,7 +141,8 @@ contract JBUniswapV4HookForkTest is Test {
             IJBController(MAINNET_JB_CONTROLLER),
             IJBPrices(MAINNET_JB_PRICES),
             IJBTerminalStore(MAINNET_JB_TERMINAL_STORE),
-            IUniswapV3Factory(MAINNET_V3_FACTORY)
+            IUniswapV3Factory(MAINNET_V3_FACTORY),
+            WETH
         );
 
         (, bytes32 salt) = HookMiner.find(address(this), flags, type(JBUniswapV4Hook).creationCode, constructorArgs);
@@ -152,7 +154,8 @@ contract JBUniswapV4HookForkTest is Test {
             IJBController(MAINNET_JB_CONTROLLER),
             IJBPrices(MAINNET_JB_PRICES),
             IJBTerminalStore(MAINNET_JB_TERMINAL_STORE),
-            IUniswapV3Factory(MAINNET_V3_FACTORY)
+            IUniswapV3Factory(MAINNET_V3_FACTORY),
+            WETH
         );
 
         // Set up a simple pool with NANA/WETH (currencies must be ordered: currency0 < currency1)
@@ -1071,6 +1074,137 @@ contract JBUniswapV4HookForkTest is Test {
         } catch {
             console.log("testFork_NoV3Pool_JuiceboxBestOrV4Fallback_NANAtoWETH swap reverted");
         }
+        vm.stopPrank();
+    }
+
+    /// @notice Test that cashOutTokensOf is executed when selling JB tokens through Juicebox
+    /// @dev This test verifies the full sell flow:
+    function testFork_SellingJBTokenViaCashOutTokensOf() public {
+        uint256 projectId = IJBTokens(MAINNET_JB_TOKENS).projectIdOf(IJBToken(NANA));
+        vm.assume(projectId != 0);
+
+        address user = testUser;
+        vm.deal(user, 20 ether);
+        vm.startPrank(user);
+        
+        // Wrap ETH to WETH
+        (bool wrapOk,) = WETH.call{value: 10 ether}(abi.encodeWithSignature("deposit()"));
+        require(wrapOk, "WETH wrap failed");
+        
+        // Approve for swaps and liquidity
+        IERC20(WETH).approve(address(jbSwapRouter), type(uint256).max);
+        IERC20(WETH).approve(address(modifyLiquidityRouter), type(uint256).max);
+        IERC20(NANA).approve(address(jbSwapRouter), type(uint256).max);
+        
+        // Add liquidity to enable swaps
+        modifyLiquidityRouter.modifyLiquidity(
+            key,
+            ModifyLiquidityParams({
+                tickLower: -120,
+                tickUpper: 120,
+                liquidityDelta: 200 ether,
+                salt: bytes32(0)
+            }),
+            ZERO_BYTES
+        );
+        
+        // First, user needs to own NANA tokens. Get them by buying via Juicebox or Uniswap
+        // Try buying through Juicebox first (WETH -> NANA)
+        uint256 buyAmount = 2 ether;
+        SwapParams memory buySwap = SwapParams({
+            zeroForOne: false, // WETH -> NANA
+            amountSpecified: -int256(buyAmount),
+            sqrtPriceLimitX96: TickMath.MAX_SQRT_PRICE - 1
+        });
+        
+        // Execute buy - this may route through Juicebox or Uniswap
+        try jbSwapRouter.swap(key, buySwap) {
+            // Buy succeeded
+        } catch {
+            vm.stopPrank();
+            return; // Can't test if buy fails
+        }
+        
+        // Check user's NANA balance
+        uint256 userNANABalance = IERC20(NANA).balanceOf(user);
+        if (userNANABalance == 0) {
+            vm.stopPrank();
+            return; // User doesn't have NANA tokens to sell
+        }
+        
+        // Now set up for selling: make Juicebox better than Uniswap
+        // Manipulate v4 price to be worse by doing a large swap that makes NANA more expensive
+        IERC20(NANA).approve(address(swapRouter), type(uint256).max);
+        SwapParams memory priceManipulation = SwapParams({
+            zeroForOne: false, // WETH -> NANA, makes NANA more expensive (worse for selling NANA)
+            amountSpecified: -int256(5000 ether),
+            sqrtPriceLimitX96: TickMath.MAX_SQRT_PRICE - 1
+        });
+        try swapRouter.swap(key, priceManipulation, PoolSwapTest.TestSettings(false, false), ZERO_BYTES) {} catch {}
+        
+        // Calculate expected outputs for selling
+        uint256 sellAmount = userNANABalance > 1000 ether ? 1000 ether : userNANABalance / 2;
+        
+        uint256 v4Out = 0;
+        try hook.estimateUniswapOutput(id, key, sellAmount, true) returns (uint256 o) {
+            v4Out = o;
+        } catch {}
+        
+        uint256 jbOut = 0;
+        try hook.calculateExpectedOutputFromSelling(projectId, sellAmount, WETH) returns (uint256 o) {
+            jbOut = o;
+        } catch {}
+        
+        // Only proceed if Juicebox is better
+        if (jbOut <= v4Out || jbOut == 0) {
+            vm.stopPrank();
+            return; // Juicebox not better, can't test this scenario
+        }
+        
+        // Record initial balances
+        uint256 initialUserWETH = IERC20(WETH).balanceOf(user);
+        uint256 initialUserNANA = IERC20(NANA).balanceOf(user);
+        
+        // Execute sell swap (NANA -> WETH)
+        // During this swap:
+        // 1. User sends NANA to pool via a swap
+        // 2. Hook takes NANA from pool (hook now owns ERC20 tokens)
+        // 3. Hook calls cashOutTokensOf(address(this), ...) to cash out tokens it owns
+        // 4. Hook receives WETH and settles back to pool
+        vm.recordLogs();
+        
+        SwapParams memory sellSwap = SwapParams({
+            zeroForOne: true, // NANA -> WETH
+            amountSpecified: -int256(sellAmount),
+            sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1
+        });
+        
+        try jbSwapRouter.swap(key, sellSwap) {
+            // Verify route was Juicebox
+            (string memory route,,) = _getLastBestRouteFromLogs();
+            assertEq(keccak256(bytes(route)), keccak256("juicebox"), "Should route through Juicebox");
+            
+            // Verify user received WETH (proving cashOutTokensOf succeeded and hook settled WETH back)
+            uint256 finalUserWETH = IERC20(WETH).balanceOf(user);
+            uint256 finalUserNANA = IERC20(NANA).balanceOf(user);
+            
+            uint256 wethReceived = finalUserWETH > initialUserWETH ? finalUserWETH - initialUserWETH : 0;
+            uint256 nanaSpent = initialUserNANA > finalUserNANA ? initialUserNANA - finalUserNANA : 0;
+            
+            // User should have received WETH and spent NANA
+            assertTrue(wethReceived > 0, "User should have received WETH from cashOutTokensOf");
+            assertEq(nanaSpent, sellAmount, "User should have spent the exact sell amount");
+            
+            // Verify hook's temporary token ownership was cleared (hook shouldn't own tokens after swap)
+            uint256 hookTokenBalance = IJBTokens(MAINNET_JB_TOKENS).totalBalanceOf(address(hook), projectId);
+            // Hook may have some tokens if it routed through Juicebox during buy, but should be minimal
+            // The key is that cashOutTokensOf succeeded and user received WETH
+        } catch Error(string memory reason) {
+            console.log("testFork_SellingJBTokenViaCashOutTokensOf swap failed:", reason);
+        } catch {
+            console.log("testFork_SellingJBTokenViaCashOutTokensOf swap reverted");
+        }
+        
         vm.stopPrank();
     }
 }

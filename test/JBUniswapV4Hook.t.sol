@@ -616,6 +616,9 @@ contract JuiceboxHookTest is Test {
         );
 
         // Prepare constructor arguments
+        // Use a test WETH address (can be any address for unit tests)
+        address testWETH = address(0x1234567890123456789012345678901234567890);
+        
         bytes memory constructorArgs = abi.encode(
             IPoolManager(address(manager)),
             IJBTokens(address(mockJBTokens)),
@@ -623,7 +626,8 @@ contract JuiceboxHookTest is Test {
             IJBController(address(mockJBController)),
             IJBPrices(address(mockJBPrices)),
             IJBTerminalStore(address(mockJBTerminalStore)),
-            IUniswapV3Factory(address(mockV3Factory))
+            IUniswapV3Factory(address(mockV3Factory)),
+            testWETH
         );
 
         // Find a valid hook address using HookMiner
@@ -645,7 +649,8 @@ contract JuiceboxHookTest is Test {
             IJBController(address(mockJBController)),
             IJBPrices(address(mockJBPrices)),
             IJBTerminalStore(address(mockJBTerminalStore)),
-            IUniswapV3Factory(address(mockV3Factory))
+            IUniswapV3Factory(address(mockV3Factory)),
+            testWETH
         );
 
         // Deploy test tokens

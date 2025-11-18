@@ -202,8 +202,7 @@ event PriceComparison(
 event RouteSelected(
     PoolId indexed poolId,
     bool useJuicebox,
-    uint256 expectedTokens,
-    uint256 savings
+    uint256 expectedTokens
 );
 ```
 

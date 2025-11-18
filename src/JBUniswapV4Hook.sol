@@ -109,8 +109,8 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
     /// @notice Juicebox native token address
     address public constant JB_NATIVE_TOKEN = address(0x000000000000000000000000000000000000EEEe);
 
-    /// @notice Canonical WETH9 address on Ethereum mainnet. Treated as native ETH for pricing.
-    address public constant WRAPPED_NATIVE_ETH = 0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2;
+    /// @notice Wrapped native ETH address for the current chain. Treated as native ETH for pricing.
+    address public immutable WETH;
 
     /// @notice TWAP period in seconds (30 minutes by default)
     uint32 public constant TWAP_PERIOD = 1800;
@@ -146,7 +146,7 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
     //*********************************************************************//
 
     /// @notice Emitted when a routing decision is made
-    event RouteSelected(PoolId indexed poolId, bool useJuicebox, uint256 expectedTokens, uint256 savings);
+    event RouteSelected(PoolId indexed poolId, bool useJuicebox, uint256 expectedTokens);
 
     /// @notice Emitted when v3 pool prices are compared
     event V3PriceComparison(
@@ -177,6 +177,7 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
     /// @param prices The Juicebox prices contract for currency conversion
     /// @param terminalStore The Juicebox terminal store for getting reclaimable surplus
     /// @param v3Factory The Uniswap v3 factory for v3 pool lookups
+    /// @param wrappedNativeEth The wrapped native ETH address for the current chain (e.g., WETH9 on mainnet, WETH on Base)
     constructor(
         IPoolManager poolManager,
         IJBTokens tokens,
@@ -184,7 +185,8 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
         IJBController controller,
         IJBPrices prices,
         IJBTerminalStore terminalStore,
-        IUniswapV3Factory v3Factory
+        IUniswapV3Factory v3Factory,
+        address wrappedNativeEth
     ) BaseHook(poolManager) {
         TOKENS = tokens;
         DIRECTORY = directory;
@@ -192,6 +194,7 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
         PRICES = prices;
         TERMINAL_STORE = terminalStore;
         V3_FACTORY = v3Factory;
+        WETH = wrappedNativeEth;
     }
 
     /// @notice Receive function to accept ETH
@@ -246,7 +249,7 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
         }
 
         // Use Juicebox's address for native token if the payment token is uniswap's native token or WETH.
-        if (paymentToken == UNISWAP_NATIVE_ETH || paymentToken == WRAPPED_NATIVE_ETH) paymentToken = JB_NATIVE_TOKEN;
+        if (paymentToken == UNISWAP_NATIVE_ETH || paymentToken == WETH) paymentToken = JB_NATIVE_TOKEN;
 
         // Get the currency ID for the payment token
         uint32 paymentCurrencyId = uint32(uint160(paymentToken));
@@ -874,7 +877,7 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
             juiceboxExpectedOutput = calculateExpectedOutputFromSelling(projectId, amountIn, tokenOut);
         } else {
             // No JB token involved, proceed with normal Uniswap swap
-            emit RouteSelected(poolId, false, 0, 0);
+            emit RouteSelected(poolId, false, 0);
             return (BaseHook.beforeSwap.selector, BeforeSwapDeltaLibrary.ZERO_DELTA, 0);
         }
 
@@ -945,10 +948,11 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
             // Execute Juicebox routing (works for both buying and selling)
             // Pass the correct isBuying flag based on which branch we came from
             bool isBuying = isBuyingJBToken; // true when buying JB tokens, false when selling
+            // Pass the terminal we already found to avoid redundant lookup
             uint256 outputReceived =
-                _routeThroughJuicebox(projectId, inputCurrency, outputCurrency, amountIn, actualUser, isBuying);
+                _routeThroughJuicebox(projectId, inputCurrency, outputCurrency, amountIn, actualUser, isBuying, jbTerminal);
 
-            emit RouteSelected(poolId, true, outputReceived, outputReceived - bestExpectedTokens);
+            emit RouteSelected(poolId, true, outputReceived);
 
             // Return delta that reflects what hook did
             // The hook takes the input amount and settles the output amount
@@ -963,7 +967,7 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
             // Execute v3 swap
             uint256 outputReceived = _routeThroughV3(tokenIn, tokenOut, amountIn, params.zeroForOne);
 
-            emit RouteSelected(poolId, false, outputReceived, outputReceived - uniswapV4ExpectedTokens);
+            emit RouteSelected(poolId, false, outputReceived);
 
             // Return delta that reflects what hook did
             // The hook takes the input amount and settles the output amount
@@ -973,7 +977,7 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
         }
 
         // Proceed with normal v4 swap
-        emit RouteSelected(poolId, false, uniswapV4ExpectedTokens, 0);
+        emit RouteSelected(poolId, false, uniswapV4ExpectedTokens);
         return (BaseHook.beforeSwap.selector, BeforeSwapDeltaLibrary.ZERO_DELTA, 0);
     }
 
@@ -985,6 +989,7 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
     /// @param amountIn The amount of input tokens
     /// @param swapper The address of the swapper
     /// @param isBuying Whether we're buying JB tokens (true) or selling them (false)
+    /// @param terminal The Juicebox terminal to use (already validated by caller)
     /// @return outputReceived The amount of output tokens received
     function _routeThroughJuicebox(
         uint256 projectId,
@@ -992,16 +997,13 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
         Currency outputCurrency,
         uint256 amountIn,
         address swapper,
-        bool isBuying
+        bool isBuying,
+        IJBTerminal terminal
     ) internal returns (uint256 outputReceived) {
         address tokenIn = Currency.unwrap(inputCurrency);
         address tokenOut = Currency.unwrap(outputCurrency);
 
-        // Get the primary terminal for the project
-        // For buying: terminal handles tokenIn (payment token)
-        // For selling: terminal handles tokenIn (JB token being redeemed)
-        IJBTerminal terminal = IJBTerminal(DIRECTORY.primaryTerminalOf(projectId, tokenIn));
-        // If no terminal is available for this token, skip JB routing
+        // Terminal is already validated by caller - ensure it's still valid
         require(address(terminal) != address(0), "No JB terminal for token");
 
         // Take input from PoolManager (pre-deposited by JuiceboxSwapRouter)
