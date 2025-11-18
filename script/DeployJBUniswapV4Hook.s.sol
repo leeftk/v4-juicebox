@@ -24,7 +24,7 @@ contract DeployJBUniswapV4Hook is Script {
     address constant DEFAULT_JB_CONTROLLER = 0x84dCD186F4c67798ed84e07dD01D1e7af8Ce4c43;
     address constant DEFAULT_JB_PRICES = 0x9b90E507cF6B7eB681A506b111f6f50245e614c4;
     address constant DEFAULT_JB_TERMINAL_STORE = 0xfE33B439Ec53748C87DcEDACb83f05aDd5014744;
-    
+
     function getFactory() internal view returns (address) {
         if (block.chainid == 1) {
             return 0x1F98431c8aD98523631AE4a59f267346ea31F984;
