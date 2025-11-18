@@ -1246,12 +1246,13 @@ contract JBUniswapV4HookForkTest is Test {
         }
         
         // Now set up for selling: make Juicebox better than Uniswap
-        // Manipulate v4 price to be worse by doing a large swap that makes NANA more expensive
+        // Manipulate v4 price to be worse for selling NANA by making NANA cheaper in v4
+        // Do a large swap that makes NANA cheaper (NANA -> WETH, makes NANA less valuable)
         IERC20(NANA).approve(address(swapRouter), type(uint256).max);
         SwapParams memory priceManipulation = SwapParams({
-            zeroForOne: false, // WETH -> NANA, makes NANA more expensive (worse for selling NANA)
+            zeroForOne: true, // NANA -> WETH, makes NANA cheaper (worse for selling NANA in v4)
             amountSpecified: -int256(5000 ether),
-            sqrtPriceLimitX96: TickMath.MAX_SQRT_PRICE - 1
+            sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1
         });
         try swapRouter.swap(key, priceManipulation, PoolSwapTest.TestSettings(false, false), ZERO_BYTES) {} catch {}
         
@@ -1268,10 +1269,18 @@ contract JBUniswapV4HookForkTest is Test {
             jbOut = o;
         } catch {}
         
-        // Only proceed if Juicebox is better
-        if (jbOut <= v4Out || jbOut == 0) {
+        // Check for primary terminal that manages NANA (the input token when selling)
+        IJBTerminal jbTerminal;
+        try IJBDirectory(MAINNET_JB_DIRECTORY).primaryTerminalOf(projectId, NANA) returns (IJBTerminal t) {
+            jbTerminal = t;
+        } catch {
+            jbTerminal = IJBTerminal(address(0));
+        }
+        
+        // Only proceed if Juicebox is better and terminal exists
+        if (jbOut <= v4Out || jbOut == 0 || address(jbTerminal) == address(0)) {
             vm.stopPrank();
-            return; // Juicebox not better, can't test this scenario
+            return; // Juicebox not better or no terminal, can't test this scenario
         }
         
         // Record initial balances
@@ -1308,10 +1317,8 @@ contract JBUniswapV4HookForkTest is Test {
             assertTrue(wethReceived > 0, "User should have received WETH from cashOutTokensOf");
             assertEq(nanaSpent, sellAmount, "User should have spent the exact sell amount");
             
-            // Verify hook's temporary token ownership was cleared (hook shouldn't own tokens after swap)
-            uint256 hookTokenBalance = IJBTokens(MAINNET_JB_TOKENS).totalBalanceOf(address(hook), projectId);
-            // Hook may have some tokens if it routed through Juicebox during buy, but should be minimal
-            // The key is that cashOutTokensOf succeeded and user received WETH
+            // Verify the amount received is reasonable (should match or be close to JB quote)
+            assertGe(wethReceived, jbOut * 95 / 100, "Should receive at least 95% of expected WETH from cashOutTokensOf");
         } catch Error(string memory reason) {
             console.log("testFork_SellingJBTokenViaCashOutTokensOf swap failed:", reason);
         } catch {
