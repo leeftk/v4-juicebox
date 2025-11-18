@@ -569,8 +569,8 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
             arithmeticMeanTick: arithmeticMeanTick
         });
 
-        // If the slippage tolerance is the maximum, return an empty quote.
-        if (slippageTolerance == TWAP_SLIPPAGE_DENOMINATOR) return 0;
+        // If the slippage tolerance is at or above the maximum, return an empty quote.
+        if (slippageTolerance >= TWAP_SLIPPAGE_DENOMINATOR) return 0;
 
         // Get a quote based on this TWAP tick.
         amountOut = _getQuoteAtTick({
@@ -578,7 +578,13 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
         });
 
         // return the lowest acceptable return based on the TWAP and its parameters.
-        amountOut -= (amountOut * slippageTolerance) / TWAP_SLIPPAGE_DENOMINATOR;
+        // Ensure slippageTolerance doesn't exceed denominator to prevent underflow
+        uint256 slippageAmount = (amountOut * slippageTolerance) / TWAP_SLIPPAGE_DENOMINATOR;
+        // Safety check: ensure we don't subtract more than amountOut
+        if (slippageAmount > amountOut) {
+            return 0;
+        }
+        amountOut -= slippageAmount;
     }
 
     /// @notice Get the slippage tolerance for a given amount in and liquidity.
@@ -619,11 +625,17 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
         if (rawSlippageBps == 0) return UNCERTAIN_TWAP_SLIPPAGE_TOLERANCE;
 
         // Cap very large values at reasonable maximum
+        // Ensure maxAllowed never exceeds TWAP_SLIPPAGE_DENOMINATOR (100%)
         uint256 maxAllowed = rawSlippageBps > 15 * TWAP_SLIPPAGE_DENOMINATOR
             ? TWAP_SLIPPAGE_DENOMINATOR * 88 / 100
             : (rawSlippageBps > 10 * TWAP_SLIPPAGE_DENOMINATOR
                     ? TWAP_SLIPPAGE_DENOMINATOR * 67 / 100
                     : rawSlippageBps / 5); // Default max: 20% of input
+        
+        // Ensure maxAllowed never exceeds 100% (safety check)
+        if (maxAllowed > TWAP_SLIPPAGE_DENOMINATOR) {
+            maxAllowed = TWAP_SLIPPAGE_DENOMINATOR;
+        }
 
         // Logarithmic scaling: Use log2 to create smooth growth with diminishing returns
         // Formula: adjusted grows logarithmically with rawSlippageBps
@@ -651,6 +663,11 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
 
         // Cap at reasonable maximum to prevent excessive slippage protection
         if (adjustedSlippageBps > maxAllowed) adjustedSlippageBps = maxAllowed;
+        
+        // Final safety cap: never exceed 100% (TWAP_SLIPPAGE_DENOMINATOR)
+        if (adjustedSlippageBps > TWAP_SLIPPAGE_DENOMINATOR) {
+            adjustedSlippageBps = TWAP_SLIPPAGE_DENOMINATOR;
+        }
 
         // For very small raw (high liquidity), ensure minimum sensible protection
         if (rawSlippageBps < 500 && adjustedSlippageBps < baseValue + 100) {
