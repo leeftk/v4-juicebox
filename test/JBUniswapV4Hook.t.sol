@@ -1008,14 +1008,17 @@ contract JuiceboxHookTest is Test {
         token1.mint(address(this), 1 ether);
         token1.approve(address(jbSwapRouter), 1 ether);
 
+        // Advance time to ensure a new observation is written (write() returns early if same block)
+        vm.warp(block.timestamp + 1);
+
         SwapParams memory params =
             SwapParams({zeroForOne: false, amountSpecified: -1 ether, sqrtPriceLimitX96: TickMath.MAX_SQRT_PRICE - 1});
 
         jbSwapRouter.swap(key, params);
 
-        // Check that cardinality has grown
+        // Check that cardinality has grown (must be strictly greater than initial)
         (, uint16 newCardinality,) = hook.states(id);
-        assertGe(newCardinality, initialCardinality, "Cardinality should have grown");
+        assertGt(newCardinality, initialCardinality, "Cardinality should have grown beyond initial value");
     }
 
     /// Given a newly initialized pool with only one observation

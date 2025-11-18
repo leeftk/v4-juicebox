@@ -790,14 +790,28 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
 
         ObservationState memory state = states[poolId];
 
+        // Auto-grow cardinality when at capacity to enable TWAP functionality
+        // Grow when we're about to wrap around (index == cardinality - 1) and cardinality == cardinalityNext
+        uint16 newCardinalityNext = state.cardinalityNext;
+        if (state.cardinality == state.cardinalityNext && state.index == state.cardinality - 1) {
+            // Double the cardinality, capped at a reasonable maximum (e.g., 256 for 30-minute TWAP with 1-hour window)
+            // This allows storing ~256 observations = ~128 hours of data at 1 observation per 30 minutes
+            uint16 targetCardinality = state.cardinalityNext < 128 
+                ? state.cardinalityNext * 2 
+                : (state.cardinalityNext < 256 ? 256 : state.cardinalityNext);
+            
+            // Grow the oracle array
+            newCardinalityNext = observations[poolId].grow(state.cardinalityNext, targetCardinality);
+        }
+
         // Write new observation
         (uint16 indexUpdated, uint16 cardinalityUpdated) = observations[poolId].write(
-            state.index, uint32(block.timestamp), tick, liquidity, state.cardinality, state.cardinalityNext
+            state.index, uint32(block.timestamp), tick, liquidity, state.cardinality, newCardinalityNext
         );
 
         // Update state
         states[poolId] = ObservationState({
-            index: indexUpdated, cardinality: cardinalityUpdated, cardinalityNext: state.cardinalityNext
+            index: indexUpdated, cardinality: cardinalityUpdated, cardinalityNext: newCardinalityNext
         });
 
         return (BaseHook.afterSwap.selector, 0);
