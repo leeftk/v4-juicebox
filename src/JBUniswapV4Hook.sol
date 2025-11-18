@@ -632,7 +632,7 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
                     ? TWAP_SLIPPAGE_DENOMINATOR * 67 / 100
                     : rawSlippageBps / 5); // Default max: 20% of input
         
-        // Ensure maxAllowed never exceeds 100% (safety check)
+        // Cap maxAllowed at 100% (safety check)
         if (maxAllowed > TWAP_SLIPPAGE_DENOMINATOR) {
             maxAllowed = TWAP_SLIPPAGE_DENOMINATOR;
         }
@@ -661,13 +661,8 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
         // Lower raw (high liquidity) → smaller logApprox → smaller adjusted (less protection)
         uint256 adjustedSlippageBps = baseValue + (scaleFactor * logApprox) / 2;
 
-        // Cap at reasonable maximum to prevent excessive slippage protection
+        // Cap at reasonable maximum to prevent excessive slippage protection (maxAllowed already capped at 100%)
         if (adjustedSlippageBps > maxAllowed) adjustedSlippageBps = maxAllowed;
-        
-        // Final safety cap: never exceed 100% (TWAP_SLIPPAGE_DENOMINATOR)
-        if (adjustedSlippageBps > TWAP_SLIPPAGE_DENOMINATOR) {
-            adjustedSlippageBps = TWAP_SLIPPAGE_DENOMINATOR;
-        }
 
         // For very small raw (high liquidity), ensure minimum sensible protection
         if (rawSlippageBps < 500 && adjustedSlippageBps < baseValue + 100) {
@@ -759,6 +754,29 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
     // ---------------------- internal transactions ---------------------- //
     //*********************************************************************//
 
+    /// @notice Creates a BeforeSwapDelta from input and output amounts
+    /// @param amountIn The input amount
+    /// @param amountOut The output amount
+    /// @return delta The BeforeSwapDelta representing the swap
+    function _createSwapDelta(uint256 amountIn, uint256 amountOut) internal pure returns (BeforeSwapDelta) {
+        // The hook takes the input amount and settles the output amount
+        // For both buying and selling: take inputCurrency, settle outputCurrency
+        return toBeforeSwapDelta(int128(uint128(amountIn)), -int128(uint128(amountOut)));
+    }
+
+    /// @notice Settles output tokens back to PoolManager
+    /// @param outputCurrency The output currency to settle
+    /// @param amount The amount to settle
+    function _settleOutput(Currency outputCurrency, uint256 amount) internal {
+        if (!outputCurrency.isAddressZero()) {
+            poolManager.sync(outputCurrency);
+            IERC20(Currency.unwrap(outputCurrency)).safeTransfer(address(poolManager), amount);
+            poolManager.settle();
+        } else {
+            poolManager.settle{value: amount}();
+        }
+    }
+
     /// @notice Hook called after pool initialization to set up oracle
     /// @param key The pool key
     /// @param tick The initial tick
@@ -834,15 +852,13 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
             }
         } catch {
             // Token is not a Juicebox project token
-            return 0;
         }
-
         return 0;
     }
 
     /// @notice Hook called before a swap
     /// @dev Compares prices between Uniswap and Juicebox, routes to cheaper option
-    function _beforeSwap(address swapper, PoolKey calldata key, SwapParams calldata params, bytes calldata hookData)
+    function _beforeSwap(address, PoolKey calldata key, SwapParams calldata params, bytes calldata)
         internal
         override
         returns (bytes4, BeforeSwapDelta, uint24)
@@ -869,22 +885,29 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
         // Check if there's a Juicebox project for this pool (auto-detect or use cached)
         uint256 projectId = projectIdOf[poolId];
 
+        // Cache token project IDs to avoid redundant calls
+        uint256 tokenInProjectId;
+        uint256 tokenOutProjectId;
+
         // If not cached, try to detect Juicebox project token
         if (projectId == 0) {
             // Check both input and output tokens for Juicebox projects
-            projectId = _checkAndRegisterJuiceboxToken(tokenOut, poolId);
-            if (projectId == 0) {
-                projectId = _checkAndRegisterJuiceboxToken(tokenIn, poolId);
-            }
+            tokenOutProjectId = _checkAndRegisterJuiceboxToken(tokenOut, poolId);
+            tokenInProjectId = _checkAndRegisterJuiceboxToken(tokenIn, poolId);
+            projectId = tokenOutProjectId != 0 ? tokenOutProjectId : tokenInProjectId;
             if (projectId == 0) {
                 // No Juicebox project, proceed with normal Uniswap swap
                 return (BaseHook.beforeSwap.selector, BeforeSwapDeltaLibrary.ZERO_DELTA, 0);
             }
+        } else {
+            // Project ID is cached, but we still need to check which token is the JB token
+            tokenInProjectId = _checkAndRegisterJuiceboxToken(tokenIn, poolId);
+            tokenOutProjectId = _checkAndRegisterJuiceboxToken(tokenOut, poolId);
         }
 
         // Determine if we're buying or selling JB tokens
-        bool isSellingJBToken = _checkAndRegisterJuiceboxToken(tokenIn, poolId) == projectId;
-        bool isBuyingJBToken = _checkAndRegisterJuiceboxToken(tokenOut, poolId) == projectId;
+        bool isSellingJBToken = tokenInProjectId == projectId;
+        bool isBuyingJBToken = tokenOutProjectId == projectId;
 
         uint256 juiceboxExpectedOutput;
 
@@ -970,26 +993,18 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
 
             emit RouteSelected(poolId, true, outputReceived);
 
-            // Return delta that reflects what hook did
-            // The hook takes the input amount and settles the output amount
-            // For both buying and selling: take inputCurrency, settle outputCurrency
-            BeforeSwapDelta hookDelta = toBeforeSwapDelta(int128(uint128(amountIn)), -int128(uint128(outputReceived)));
-
-            return (BaseHook.beforeSwap.selector, hookDelta, 0);
+            return (BaseHook.beforeSwap.selector, _createSwapDelta(amountIn, outputReceived), 0);
         }
 
         // If v3 is better than v4, execute the v3 swap
         if (v3BetterThanV4 && uniswapV3ExpectedTokens > 0) {
-            // Execute v3 swap
-            uint256 outputReceived = _routeThroughV3(tokenIn, tokenOut, amountIn, params.zeroForOne);
+            // Execute v3 swap (pass pre-calculated token ordering)
+            uint256 outputReceived = _routeThroughV3(v3Token0, v3Token1, amountIn, v3ZeroForOne);
 
             emit RouteSelected(poolId, false, outputReceived);
 
             // Return delta that reflects what hook did
-            // The hook takes the input amount and settles the output amount
-            BeforeSwapDelta hookDelta = toBeforeSwapDelta(int128(uint128(amountIn)), -int128(uint128(outputReceived)));
-
-            return (BaseHook.beforeSwap.selector, hookDelta, 0);
+            return (BaseHook.beforeSwap.selector, _createSwapDelta(amountIn, outputReceived), 0);
         }
 
         // Proceed with normal v4 swap
@@ -1017,9 +1032,7 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
         address tokenIn = Currency.unwrap(inputCurrency);
         address tokenOut = Currency.unwrap(outputCurrency);
 
-        // Terminal is already validated by caller - ensure it's still valid
-        require(address(terminal) != address(0), "No JB terminal for token");
-
+        // Terminal is already validated by caller
         // Take input from PoolManager (pre-deposited by JuiceboxSwapRouter)
         poolManager.take(inputCurrency, address(this), amountIn);
 
@@ -1056,32 +1069,22 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
         }
 
         // Settle output back to PoolManager
-        if (!outputCurrency.isAddressZero()) {
-            poolManager.sync(outputCurrency);
-            IERC20(tokenOut).safeTransfer(address(poolManager), outputReceived);
-            poolManager.settle();
-        } else {
-            poolManager.settle{value: outputReceived}();
-        }
+        _settleOutput(outputCurrency, outputReceived);
 
         return outputReceived;
     }
 
     /// @notice Routes a swap through Uniswap v3 instead of v4
     /// @dev Takes input tokens from PoolManager, executes v3 swap, settles output tokens back
-    /// @param tokenIn The input token address
-    /// @param tokenOut The output token address
+    /// @param token0 The token0 address (token0 < token1)
+    /// @param token1 The token1 address (token0 < token1)
     /// @param amountIn The amount of input tokens
     /// @param zeroForOne Whether swapping token0 for token1
     /// @return outputReceived The amount of output tokens received
-    function _routeThroughV3(address tokenIn, address tokenOut, uint256 amountIn, bool zeroForOne)
+    function _routeThroughV3(address token0, address token1, uint256 amountIn, bool zeroForOne)
         internal
         returns (uint256 outputReceived)
     {
-        // Convert Uniswap native ETH to address(0) for v3 pool lookup
-        address token0 = tokenIn < tokenOut ? tokenIn : tokenOut;
-        address token1 = tokenIn < tokenOut ? tokenOut : tokenIn;
-
         // Get the v3 pool (10000 fee tier)
         address v3Pool = V3_FACTORY.getPool(token0, token1, 10000);
         require(v3Pool != address(0), "V3 pool not found");
@@ -1090,13 +1093,14 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
         (,,,,,, bool unlocked) = IUniswapV3Pool(v3Pool).slot0();
         require(unlocked, "V3 pool locked");
 
+        // Determine input/output tokens based on swap direction
+        address tokenIn = zeroForOne ? token0 : token1;
+        address tokenOut = zeroForOne ? token1 : token0;
+
         // Take input from PoolManager
         Currency inputCurrency = Currency.wrap(tokenIn);
         Currency outputCurrency = Currency.wrap(tokenOut);
         poolManager.take(inputCurrency, address(this), amountIn);
-
-        // Determine swap direction based on token ordering
-        bool swapZeroForOne = tokenIn < tokenOut;
 
         // Execute v3 swap
         // v3 swap parameters: recipient, zeroForOne, amountSpecified, sqrtPriceLimitX96, data
@@ -1104,14 +1108,14 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
         (int256 amount0Delta, int256 amount1Delta) = IUniswapV3Pool(v3Pool)
             .swap(
                 address(this), // recipient
-                swapZeroForOne,
+                zeroForOne,
                 int256(amountIn), // amountSpecified (positive for exact input)
-                swapZeroForOne ? V3_MIN_SQRT_RATIO + 1 : V3_MAX_SQRT_RATIO - 1,
+                zeroForOne ? V3_MIN_SQRT_RATIO + 1 : V3_MAX_SQRT_RATIO - 1,
                 abi.encode(token0, token1, uint24(10000)) // data for callback validation
             );
 
         // Calculate output received (one of the deltas will be negative, the other positive)
-        if (swapZeroForOne) {
+        if (zeroForOne) {
             // Swapping token0 for token1: amount0Delta is positive (input), amount1Delta is negative (output)
             outputReceived = uint256(-amount1Delta);
         } else {
@@ -1120,14 +1124,7 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
         }
 
         // Settle output back to PoolManager
-        if (!outputCurrency.isAddressZero()) {
-            poolManager.sync(outputCurrency);
-            IERC20(tokenOut).safeTransfer(address(poolManager), outputReceived);
-            poolManager.settle();
-        } else {
-            // Output is native ETH - settle with value
-            poolManager.settle{value: outputReceived}();
-        }
+        _settleOutput(outputCurrency, outputReceived);
         return outputReceived;
     }
 
