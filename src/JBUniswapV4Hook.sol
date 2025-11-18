@@ -49,10 +49,6 @@ import {JBRulesetMetadata} from "@bananapus/core-v5/structs/JBRulesetMetadata.so
 import {UD60x18} from "../lib/prb-math/src/ud60x18/ValueType.sol";
 import {log2} from "../lib/prb-math/src/ud60x18/Math.sol";
 
-interface IMsgSender {
-    function msgSender() external view returns (address);
-}
-
 /// @title JBUniswapV4Hook
 /// @notice Official Juicebox integration for Uniswap v4 that provides price comparison and optimal routing
 /// @dev This hook compares prices between Uniswap pools and Juicebox projects, then routes to the cheaper option
@@ -66,6 +62,10 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
     //*********************************************************************//
     // --------------------------- custom errors ------------------------- //
     //*********************************************************************//
+
+    /// @notice Reverts when an exact-output swap is attempted
+    /// @dev Only exact-input swaps are supported
+    error ExactOutputSwapsNotSupported();
 
     //*********************************************************************//
     // ---------------------------- structs ------------------------------ //
@@ -162,8 +162,7 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
     event BestRouteSelected(
         PoolId indexed poolId,
         string routeType, // "v3", "v4", or "juicebox"
-        uint256 expectedTokens,
-        uint256 savings
+        uint256 expectedTokens
     );
 
     //*********************************************************************//
@@ -819,21 +818,11 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
     {
         PoolId poolId = key.toId();
 
-        // Decode the actual user address from hookData (if provided)
-        // If empty hookData, no custom routing (standard Uniswap swap)
-        address actualUser = address(0);
-        if (hookData.length >= 32) {
-            // HookData contains the router address - call msgSender() on it to get actual user
-            address routerAddress = abi.decode(hookData, (address));
-            // Only attempt the call if the address has code (is a contract)
-            if (routerAddress.code.length > 0) {
-                try IMsgSender(routerAddress).msgSender() returns (address user) {
-                    actualUser = user;
-                } catch {
-                    // Router doesn't support msgSender(), can't route to JB
-                    actualUser = address(0);
-                }
-            }
+        // Only support exact-input swaps (amountSpecified < 0)
+        // Exact-output swaps (amountSpecified > 0) are not supported as they require
+        // different handling of specified/unspecified tokens and delta signs
+        if (params.amountSpecified > 0) {
+            revert ExactOutputSwapsNotSupported();
         }
 
         // Determine input and output currencies based on swap direction
@@ -843,9 +832,8 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
         address tokenIn = Currency.unwrap(inputCurrency);
         address tokenOut = Currency.unwrap(outputCurrency);
 
-        // Get absolute amount (params.amountSpecified is negative for exact input)
-        uint256 amountIn =
-            params.amountSpecified > 0 ? uint256(params.amountSpecified) : uint256(-params.amountSpecified);
+        // Get input amount (amountSpecified is negative for exact input)
+        uint256 amountIn = uint256(-params.amountSpecified);
 
         // Check if there's a Juicebox project for this pool (auto-detect or use cached)
         uint256 projectId = projectIdOf[poolId];
@@ -913,13 +901,11 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
         // Determine the best option among v3, v4, and Juicebox
         uint256 bestExpectedTokens = uniswapV4ExpectedTokens;
         string memory bestRoute = "v4";
-        uint256 bestSavings = 0;
 
         // Check if v3 is better than v4
         if (v3BetterThanV4 && uniswapV3ExpectedTokens > 0) {
             bestExpectedTokens = uniswapV3ExpectedTokens;
             bestRoute = "v3";
-            bestSavings = uniswapV3ExpectedTokens - uniswapV4ExpectedTokens;
         }
 
         // Check if Juicebox is better than the best Uniswap option
@@ -938,19 +924,18 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
         if (juiceboxBetterThanUniswap && juiceboxExpectedOutput > 0) {
             bestExpectedTokens = juiceboxExpectedOutput;
             bestRoute = "juicebox";
-            bestSavings = juiceboxExpectedOutput - (v3BetterThanV4 ? uniswapV3ExpectedTokens : uniswapV4ExpectedTokens);
         }
 
-        emit BestRouteSelected(poolId, bestRoute, bestExpectedTokens, bestSavings);
+        emit BestRouteSelected(poolId, bestRoute, bestExpectedTokens);
 
-        // If Juicebox gives better output AND we have actualUser, route through Juicebox
-        if (juiceboxBetterThanUniswap && juiceboxExpectedOutput > 0 && actualUser != address(0)) {
+        // If Juicebox gives better output, route through Juicebox
+        if (juiceboxBetterThanUniswap && juiceboxExpectedOutput > 0) {
             // Execute Juicebox routing (works for both buying and selling)
             // Pass the correct isBuying flag based on which branch we came from
             bool isBuying = isBuyingJBToken; // true when buying JB tokens, false when selling
             // Pass the terminal we already found to avoid redundant lookup
             uint256 outputReceived =
-                _routeThroughJuicebox(projectId, inputCurrency, outputCurrency, amountIn, actualUser, isBuying, jbTerminal);
+                _routeThroughJuicebox(projectId, inputCurrency, outputCurrency, amountIn, isBuying, jbTerminal);
 
             emit RouteSelected(poolId, true, outputReceived);
 
@@ -987,7 +972,6 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
     /// @param inputCurrency The input currency (what the swapper is paying)
     /// @param outputCurrency The output currency (what the swapper receives)
     /// @param amountIn The amount of input tokens
-    /// @param swapper The address of the swapper
     /// @param isBuying Whether we're buying JB tokens (true) or selling them (false)
     /// @param terminal The Juicebox terminal to use (already validated by caller)
     /// @return outputReceived The amount of output tokens received
@@ -996,7 +980,6 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
         Currency inputCurrency,
         Currency outputCurrency,
         uint256 amountIn,
-        address swapper,
         bool isBuying,
         IJBTerminal terminal
     ) internal returns (uint256 outputReceived) {
