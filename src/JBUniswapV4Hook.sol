@@ -697,7 +697,10 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
         }
 
         // Get current pool state for observation
-        (, int24 tick,, uint128 liquidity) = poolManager.getSlot0(poolId);
+        // getSlot0 returns: sqrtPriceX96, tick, protocolFee, lpFee (no liquidity)
+        (, int24 tick,,) = poolManager.getSlot0(poolId);
+        // Get current liquidity from the dedicated accessor
+        uint128 liquidity = poolManager.getLiquidity(poolId);
 
         uint32 currentTime = uint32(block.timestamp);
 
@@ -772,7 +775,10 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
     /// @param token The token address
     /// @return terminal The primary terminal, or address(0) if not found
     function _getPrimaryTerminal(uint256 projectId, address token) internal view returns (IJBTerminal) {
-        try DIRECTORY.primaryTerminalOf(projectId, token) returns (IJBTerminal t) {
+        // Normalize token to Juicebox's native token representation before lookup
+        // This ensures consistency with price calculations and handles native ETH correctly
+        address normalized = _normalizeToken(token);
+        try DIRECTORY.primaryTerminalOf(projectId, normalized) returns (IJBTerminal t) {
             return t;
         } catch {
             return IJBTerminal(address(0));
@@ -816,7 +822,10 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
     /// @param poolId The pool ID
     function _recordObservation(PoolId poolId) internal {
         // Get current pool state
-        (, int24 tick,, uint128 liquidity) = poolManager.getSlot0(poolId);
+        // getSlot0 returns: sqrtPriceX96, tick, protocolFee, lpFee (no liquidity)
+        (, int24 tick,,) = poolManager.getSlot0(poolId);
+        // Get current liquidity from the dedicated accessor
+        uint128 liquidity = poolManager.getLiquidity(poolId);
 
         ObservationState memory state = states[poolId];
 
