@@ -278,30 +278,12 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
         // Formula: expectedTokens = (tokensPerBaseCurrency * paymentAmount * baseCurrencyPerPaymentToken) / (1e18 * paymentTokenDecimals)
         // This converts paymentAmount to baseCurrency, then multiplies by tokensPerBaseCurrency
         // Use FullMath for safe multiplication to prevent overflow
-
-        if (paymentTokenDecimals == 18) {
-            // If baseCurrencyPerPaymentToken is 1e18 (1:1 conversion), simplify the calculation
-            if (baseCurrencyPerPaymentToken == 1e18) {
-                // Direct calculation: (weight * paymentAmount) / 1e18
-                expectedTokens = FullMath.mulDiv(tokensPerBaseCurrency, paymentAmount, 1e18);
-            } else {
-                // First multiply tokensPerBaseCurrency and paymentAmount
-                uint256 intermediate = FullMath.mulDiv(tokensPerBaseCurrency, paymentAmount, 1e18);
-                // Then multiply by baseCurrencyPerPaymentToken and divide by 1e18
-                expectedTokens = FullMath.mulDiv(intermediate, baseCurrencyPerPaymentToken, 1e18);
-            }
-        } else {
-            // Convert paymentAmount to 18 decimals first
-            uint256 paymentAmount18 = (paymentAmount * 1e18) / (10 ** paymentTokenDecimals);
-            // Use FullMath for safe multiplication
-            if (baseCurrencyPerPaymentToken == 1e18) {
-                // Direct calculation when conversion is 1:1
-                expectedTokens = FullMath.mulDiv(tokensPerBaseCurrency, paymentAmount18, 1e18);
-            } else {
-                uint256 intermediate = FullMath.mulDiv(tokensPerBaseCurrency, paymentAmount18, 1e18);
-                expectedTokens = FullMath.mulDiv(intermediate, baseCurrencyPerPaymentToken, 1e18);
-            }
-        }
+        expectedTokens = _calculateTokensWithCurrency(
+            tokensPerBaseCurrency,
+            paymentAmount,
+            paymentTokenDecimals,
+            baseCurrencyPerPaymentToken
+        );
     }
 
     /// @notice Calculate expected output from selling JB tokens
@@ -780,6 +762,35 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
             return decimals;
         } catch {
             return 18; // Default to 18 if unavailable
+        }
+    }
+
+    /// @notice Calculates expected tokens with currency conversion
+    /// @dev Normalizes payment amount to 18 decimals, then calculates tokens based on weight and price conversion
+    /// @param tokensPerBaseCurrency The project's weight (tokens per base currency unit)
+    /// @param paymentAmount The payment amount in the token's native decimals
+    /// @param paymentTokenDecimals The decimals of the payment token
+    /// @param baseCurrencyPerPaymentToken The price conversion rate (base currency per payment token, scaled by 1e18)
+    /// @return expectedTokens The expected number of tokens to be received
+    function _calculateTokensWithCurrency(
+        uint256 tokensPerBaseCurrency,
+        uint256 paymentAmount,
+        uint8 paymentTokenDecimals,
+        uint256 baseCurrencyPerPaymentToken
+    ) internal pure returns (uint256 expectedTokens) {
+        // Normalize payment amount to 18 decimals
+        uint256 paymentAmount18 = paymentTokenDecimals == 18
+            ? paymentAmount
+            : (paymentAmount * 1e18) / (10 ** paymentTokenDecimals);
+
+        // Calculate tokens: if price conversion is 1:1, simplify; otherwise apply price conversion
+        if (baseCurrencyPerPaymentToken == 1e18) {
+            // Direct calculation: (weight * paymentAmount18) / 1e18
+            expectedTokens = FullMath.mulDiv(tokensPerBaseCurrency, paymentAmount18, 1e18);
+        } else {
+            // Two-step calculation: first multiply by weight, then apply price conversion
+            uint256 intermediate = FullMath.mulDiv(tokensPerBaseCurrency, paymentAmount18, 1e18);
+            expectedTokens = FullMath.mulDiv(intermediate, baseCurrencyPerPaymentToken, 1e18);
         }
     }
 

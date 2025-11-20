@@ -16,6 +16,7 @@ import {PoolId, PoolIdLibrary} from "@uniswap/v4-core/src/types/PoolId.sol";
 import {Currency, CurrencyLibrary} from "@uniswap/v4-core/src/types/Currency.sol";
 import {TickMath} from "@uniswap/v4-core/src/libraries/TickMath.sol";
 import {Hooks} from "@uniswap/v4-core/src/libraries/Hooks.sol";
+import {FullMath} from "@uniswap/v4-core/src/libraries/FullMath.sol";
 
 import {JBUniswapV4Hook} from "../src/JBUniswapV4Hook.sol";
 import {MockERC20} from "./mock/MockERC20.sol";
@@ -1243,6 +1244,33 @@ contract JuiceboxHookTest is Test {
         // Should match simple calculation for ETH
         uint256 calculated = (weight * paymentAmount) / 1e18;
         assertEq(expectedTokens, calculated, "ETH payment calculation should match");
+    }
+
+    /// Given project 123 has a weight of 1000e18
+    /// And token1 has a price of 0.5 ETH per token (2 token1 = 1 ETH)
+    /// When calculating expected tokens for 2 ether of token1
+    /// Then the result should account for the non-1:1 price conversion
+    function testCalculateExpectedTokensWithNonOneToOnePrice() public {
+        mockJBController.setWeight(123, 1000e18);
+        
+        // Set price: 2 token1 = 1 ETH (so baseCurrencyPerPaymentToken = 0.5e18)
+        // This means 1 token1 = 0.5 ETH, so baseCurrencyPerPaymentToken = 0.5e18
+        // Note: pricePerUnitOf(projectId, baseCurrency, paymentCurrencyId, 18) returns baseCurrency per paymentCurrencyId
+        // So we set: prices[projectId][baseCurrency][paymentCurrencyId] = price
+        uint32 token1CurrencyId = uint32(uint160(address(token1)));
+        uint256 baseCurrency = 1; // ETH
+        mockJBPrices.setPricePerUnitOf(123, baseCurrency, token1CurrencyId, 0.5e18);
+        
+        // Calculate expected tokens for 2 ether of token1
+        // Expected: (1000e18 * 2e18 * 0.5e18) / (1e18 * 1e18) = 1000e18
+        uint256 expectedTokens = hook.calculateExpectedTokensWithCurrency(123, address(token1), 2 ether);
+        
+        // Manual calculation using FullMath to match the hook's logic
+        uint256 intermediate = FullMath.mulDiv(1000e18, 2 ether, 1e18);
+        uint256 calculated = FullMath.mulDiv(intermediate, 0.5e18, 1e18);
+        
+        assertEq(expectedTokens, calculated, "Non-1:1 price calculation should match");
+        assertEq(expectedTokens, 1000 ether, "Should receive 1000 tokens for 2 token1 at 0.5 ETH/token");
     }
 
     /// Given project 123 has a weight of 0
