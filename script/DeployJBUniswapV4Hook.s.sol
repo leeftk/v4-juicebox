@@ -24,7 +24,7 @@ contract DeployJBUniswapV4Hook is Script {
     address constant DEFAULT_JB_CONTROLLER = 0x84dCD186F4c67798ed84e07dD01D1e7af8Ce4c43;
     address constant DEFAULT_JB_PRICES = 0x9b90E507cF6B7eB681A506b111f6f50245e614c4;
     address constant DEFAULT_JB_TERMINAL_STORE = 0xfE33B439Ec53748C87DcEDACb83f05aDd5014744;
-    
+
     function getFactory() internal view returns (address) {
         if (block.chainid == 1) {
             return 0x1F98431c8aD98523631AE4a59f267346ea31F984;
@@ -54,6 +54,20 @@ contract DeployJBUniswapV4Hook is Script {
         }
     }
 
+    function getWETH() internal view returns (address) {
+        if (block.chainid == 1) {
+            return 0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2; // Ethereum Mainnet WETH9
+        } else if (block.chainid == 10 || block.chainid == 11_155_111 || block.chainid == 11_155_420) {
+            return 0x4200000000000000000000000000000000000006; // Optimism WETH
+        } else if (block.chainid == 8453 || block.chainid == 84_532) {
+            return 0x4200000000000000000000000000000000000006; // Base WETH
+        } else if (block.chainid == 42_161 || block.chainid == 421_614) {
+            return 0x82aF49447D8a07e3bd95BD0d56f35241523fBab1; // Arbitrum WETH
+        } else {
+            revert("Invalid RPC / WETH address not configured for this network");
+        }
+    }
+
     function run() external {
         // Get the pool manager address from environment or use a default
         address poolManager = vm.envOr("POOL_MANAGER", address(0));
@@ -66,6 +80,7 @@ contract DeployJBUniswapV4Hook is Script {
         address jbPrices = vm.envOr("JB_PRICES", DEFAULT_JB_PRICES);
         address jbTerminalStore = vm.envOr("JB_TERMINAL_STORE", DEFAULT_JB_TERMINAL_STORE);
         address v3Factory = vm.envOr("V3_FACTORY", getFactory());
+        address wrappedNativeEth = vm.envOr("WETH", getWETH());
 
         uint256 deployerPrivateKey = vm.envUint("PRIVATE_KEY");
         address deployer = vm.addr(deployerPrivateKey);
@@ -78,6 +93,8 @@ contract DeployJBUniswapV4Hook is Script {
         console2.log("  JB Controller:", jbController);
         console2.log("  JB Prices:", jbPrices);
         console2.log("  JB Terminal Store:", jbTerminalStore);
+        console2.log("  V3 Factory:", v3Factory);
+        console2.log("  Wrapped Native ETH:", wrappedNativeEth);
 
         vm.startBroadcast(deployerPrivateKey);
 
@@ -100,7 +117,11 @@ contract DeployJBUniswapV4Hook is Script {
         });
 
         // Calculate the required flags for the hook permissions
-        uint160 flags = uint160(Hooks.BEFORE_SWAP_FLAG | Hooks.AFTER_SWAP_FLAG | Hooks.AFTER_INITIALIZE_FLAG);
+        uint160 flags = uint160(
+            Hooks.BEFORE_SWAP_FLAG | Hooks.AFTER_SWAP_FLAG | Hooks.AFTER_INITIALIZE_FLAG
+                | Hooks.BEFORE_SWAP_RETURNS_DELTA_FLAG | Hooks.AFTER_ADD_LIQUIDITY_FLAG
+                | Hooks.AFTER_REMOVE_LIQUIDITY_FLAG
+        );
 
         // Prepare constructor arguments
         bytes memory constructorArgs = abi.encode(
@@ -110,7 +131,8 @@ contract DeployJBUniswapV4Hook is Script {
             IJBController(jbController),
             IJBPrices(jbPrices),
             IJBTerminalStore(jbTerminalStore),
-            IUniswapV3Factory(v3Factory)
+            IUniswapV3Factory(v3Factory),
+            wrappedNativeEth
         );
 
         // Find a valid hook address using HookMiner
@@ -130,7 +152,8 @@ contract DeployJBUniswapV4Hook is Script {
             IJBController(jbController),
             IJBPrices(jbPrices),
             IJBTerminalStore(jbTerminalStore),
-            IUniswapV3Factory(v3Factory)
+            IUniswapV3Factory(v3Factory),
+            wrappedNativeEth
         );
 
         console2.log("JBUniswapV4Hook deployed at:", address(hook));
