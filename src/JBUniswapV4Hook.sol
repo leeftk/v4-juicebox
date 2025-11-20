@@ -21,6 +21,11 @@ import {TickMath} from "@uniswap/v4-core/src/libraries/TickMath.sol";
 import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+// WETH interface for wrapping/unwrapping
+interface IWETH9 {
+    function deposit() external payable;
+    function withdraw(uint256) external;
+}
 // Uniswap v3 interfaces
 import {IUniswapV3Factory} from "./interfaces/IUniswapV3Factory.sol";
 import {IUniswapV3Pool} from "./interfaces/IUniswapV3Pool.sol";
@@ -756,6 +761,14 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
         return (token == UNISWAP_NATIVE_ETH || token == WETH) ? JB_NATIVE_TOKEN : token;
     }
 
+    /// @notice Converts native ETH address to WETH for Uniswap v3 operations
+    /// @dev v3 pools use WETH, not address(0), so we need to map native ETH to WETH
+    /// @param token The token address (may be address(0) for native ETH)
+    /// @return v3Token The token address to use for v3 operations (WETH if input was address(0))
+    function _convertToV3Token(address token) internal view returns (address) {
+        return token == UNISWAP_NATIVE_ETH ? WETH : token;
+    }
+
     /// @notice Gets token decimals, defaulting to 18 if unavailable
     /// @param token The token address
     /// @return decimals The token decimals (defaults to 18)
@@ -990,8 +1003,11 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
         uint256 uniswapV4ExpectedTokens = estimateUniswapOutput(poolId, key, amountIn, params.zeroForOne);
 
         // Calculate how many tokens we'd get from Uniswap v3 (10000 fee tier only)
+        // v3 pools use WETH, not address(0), so convert native ETH to WETH for v3 operations
+        address v3TokenIn = _convertToV3Token(tokenIn);
+        address v3TokenOut = _convertToV3Token(tokenOut);
         // Determine v3 swap direction based on token ordering (v3 uses token0 < token1)
-        (address v3Token0, address v3Token1, bool v3ZeroForOne) = _getTokenOrdering(tokenIn, tokenOut);
+        (address v3Token0, address v3Token1, bool v3ZeroForOne) = _getTokenOrdering(v3TokenIn, v3TokenOut);
         uint256 uniswapV3ExpectedTokens;
         try this.estimateUniswapV3Output(v3Token0, v3Token1, amountIn, v3ZeroForOne) returns (uint256 tokens) {
             uniswapV3ExpectedTokens = tokens;
@@ -1040,8 +1056,9 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
 
         // If v3 is better than v4, execute the v3 swap
         if (v3BetterThanV4 && uniswapV3ExpectedTokens > 0) {
-            // Execute v3 swap (pass pre-calculated token ordering)
-            uint256 outputReceived = _routeThroughV3(v3Token0, v3Token1, amountIn, v3ZeroForOne);
+            // Execute v3 swap (pass pre-calculated token ordering with WETH mapping)
+            // Note: v3Token0 and v3Token1 already have address(0) converted to WETH
+            uint256 outputReceived = _routeThroughV3(v3Token0, v3Token1, amountIn, v3ZeroForOne, tokenIn, tokenOut);
 
             emit RouteSelected(poolId, false, outputReceived);
 
@@ -1078,6 +1095,9 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
         // Take input from PoolManager (pre-deposited by JuiceboxSwapRouter)
         poolManager.take(inputCurrency, address(this), amountIn);
 
+        // Normalize token for Juicebox (WETH/native ETH → JB_NATIVE_TOKEN)
+        address normalizedTokenIn = _normalizeToken(tokenIn);
+
         // Approve the terminal to spend the tokens if needed
         if (!inputCurrency.isAddressZero()) {
             IERC20(tokenIn).safeIncreaseAllowance(address(terminal), amountIn);
@@ -1085,13 +1105,14 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
 
         if (isBuying) {
             // Buying JB tokens: Pay to Juicebox and receive JB tokens
+            // Use normalized token for Juicebox API (JB_NATIVE_TOKEN for native ETH/WETH)
             uint256 payValue = inputCurrency.isAddressZero() ? amountIn : 0;
             outputReceived = IJBMultiTerminal(address(terminal))
             .pay{
                 value: payValue
             }(
                 projectId,
-                tokenIn,
+                normalizedTokenIn, // Use normalized token (JB_NATIVE_TOKEN for native ETH/WETH)
                 amountIn,
                 address(this), // Tokens come to hook
                 0, // No minimum tokens required
@@ -1100,13 +1121,15 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
             );
         } else {
             // Selling JB tokens: Cash out JB tokens and receive output currency
+            // Normalize output token for Juicebox (WETH/native ETH → JB_NATIVE_TOKEN)
+            address normalizedTokenOut = _normalizeToken(tokenOut);
             // Call the terminal's cash out function to get the output tokens
             outputReceived = IJBMultiTerminal(address(terminal))
                 .cashOutTokensOf(
                     address(this), // holder (hook owns the JB tokens)
                     projectId,
                     amountIn, // cashOutCount: Amount of JB tokens to cash out
-                    tokenOut, // tokenToReclaim: The output token we want to receive
+                    normalizedTokenOut, // Use normalized token (JB_NATIVE_TOKEN for native ETH/WETH)
                     0, // minTokensReclaimed: No minimum tokens required
                     payable(address(this)), // beneficiary (hook)
                     bytes("") // Empty metadata
@@ -1121,15 +1144,22 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
 
     /// @notice Routes a swap through Uniswap v3 instead of v4
     /// @dev Takes input tokens from PoolManager, executes v3 swap, settles output tokens back
-    /// @param token0 The token0 address (token0 < token1)
-    /// @param token1 The token1 address (token0 < token1)
+    /// @dev Handles wrapping/unwrapping ETH↔WETH since v3 uses WETH but v4 can use native ETH
+    /// @param token0 The v3 token0 address (token0 < token1, already converted to WETH if needed)
+    /// @param token1 The v3 token1 address (token0 < token1, already converted to WETH if needed)
     /// @param amountIn The amount of input tokens
     /// @param zeroForOne Whether swapping token0 for token1
+    /// @param originalTokenIn The original tokenIn from v4 (may be address(0) for native ETH)
+    /// @param originalTokenOut The original tokenOut from v4 (may be address(0) for native ETH)
     /// @return outputReceived The amount of output tokens received
-    function _routeThroughV3(address token0, address token1, uint256 amountIn, bool zeroForOne)
-        internal
-        returns (uint256 outputReceived)
-    {
+    function _routeThroughV3(
+        address token0,
+        address token1,
+        uint256 amountIn,
+        bool zeroForOne,
+        address originalTokenIn,
+        address originalTokenOut
+    ) internal returns (uint256 outputReceived) {
         // Get the v3 pool (10000 fee tier)
         address v3Pool = V3_FACTORY.getPool(token0, token1, 10000);
         require(v3Pool != address(0), "V3 pool not found");
@@ -1139,13 +1169,19 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
         require(unlocked, "V3 pool locked");
 
         // Determine input/output tokens based on swap direction
-        address tokenIn = zeroForOne ? token0 : token1;
-        address tokenOut = zeroForOne ? token1 : token0;
+        address v3TokenIn = zeroForOne ? token0 : token1;
+        address v3TokenOut = zeroForOne ? token1 : token0;
 
-        // Take input from PoolManager
-        Currency inputCurrency = Currency.wrap(tokenIn);
-        Currency outputCurrency = Currency.wrap(tokenOut);
+        // Take input from PoolManager (may be native ETH)
+        Currency inputCurrency = Currency.wrap(originalTokenIn);
         poolManager.take(inputCurrency, address(this), amountIn);
+
+        // If input is native ETH, wrap it to WETH for v3 swap
+        // WETH will be minted to this contract's balance
+        if (originalTokenIn == UNISWAP_NATIVE_ETH) {
+            IWETH9(payable(WETH)).deposit{value: amountIn}();
+        }
+        // Note: No approval needed - callback uses safeTransfer from contract balance
 
         // Execute v3 swap
         // v3 swap parameters: recipient, zeroForOne, amountSpecified, sqrtPriceLimitX96, data
@@ -1166,6 +1202,16 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
         } else {
             // Swapping token1 for token0: amount1Delta is positive (input), amount0Delta is negative (output)
             outputReceived = uint256(-amount0Delta);
+        }
+
+        // If output should be native ETH, unwrap WETH to ETH
+        Currency outputCurrency;
+        if (originalTokenOut == UNISWAP_NATIVE_ETH) {
+            // Unwrap WETH to ETH
+            IWETH9(payable(WETH)).withdraw(outputReceived);
+            outputCurrency = Currency.wrap(UNISWAP_NATIVE_ETH);
+        } else {
+            outputCurrency = Currency.wrap(originalTokenOut);
         }
 
         // Settle output back to PoolManager
@@ -1203,6 +1249,7 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
 
         // Transfer the required amount to the pool
         // The tokens should already be in this contract from the take() call
+        // If native ETH was input, tokenToPay will be WETH (already wrapped in _routeThroughV3)
         IERC20(tokenToPay).safeTransfer(msg.sender, amountToPay);
     }
 }
