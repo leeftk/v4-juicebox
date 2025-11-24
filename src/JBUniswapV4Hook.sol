@@ -70,7 +70,7 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
 
     /// @notice Reverts when an exact-output swap is attempted
     /// @dev Only exact-input swaps are supported
-    error ExactOutputSwapsNotSupported();
+    error JBUniswapV4Hook_ExactOutputSwapsNotSupported();
 
     //*********************************************************************//
     // ---------------------------- structs ------------------------------ //
@@ -296,6 +296,9 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
         view
         returns (uint256 expectedOutput)
     {
+        // Normalize output token to Juicebox's native token representation
+        outputToken = _normalizeToken(outputToken);
+
         // Get the current reclaimable surplus for the project
         // This represents how much value can be reclaimed for the given token amount
         return TERMINAL_STORE.currentReclaimableSurplusOf(
@@ -956,7 +959,7 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
         // Exact-output swaps (amountSpecified > 0) are not supported as they require
         // different handling of specified/unspecified tokens and delta signs
         if (params.amountSpecified > 0) {
-            revert ExactOutputSwapsNotSupported();
+            revert JBUniswapV4Hook_ExactOutputSwapsNotSupported();
         }
 
         // Determine input and output currencies based on swap direction
@@ -1118,10 +1121,7 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
             // Buying JB tokens: Pay to Juicebox and receive JB tokens
             // Use normalized token for Juicebox API (JB_NATIVE_TOKEN for native ETH/WETH)
             uint256 payValue = inputCurrency.isAddressZero() ? amountIn : 0;
-            outputReceived = IJBMultiTerminal(address(terminal))
-            .pay{
-                value: payValue
-            }(
+            outputReceived =terminal.pay{ value: payValue }(
                 projectId,
                 normalizedTokenIn, // Use normalized token (JB_NATIVE_TOKEN for native ETH/WETH)
                 amountIn,
