@@ -139,9 +139,6 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
     // --------------------- public stored properties -------------------- //
     //*********************************************************************//
 
-    /// @notice Mapping from Uniswap pool ID to Juicebox project ID
-    mapping(PoolId => uint256) public projectIdOf;
-
     /// @notice The list of observations for a given pool ID
     mapping(PoolId => Oracle.Observation[65535]) public observations;
 
@@ -737,11 +734,21 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
         CurrencySettler.settle(outputCurrency, poolManager, address(this), amount, false);
     }
 
-    /// @notice Normalizes a token address to Juicebox's native token representation
+    /// @notice Normalizes a token address to Juicebox's native token representation for pricing
+    /// @dev For price quoting, WETH and native ETH are equivalent, so both normalize to JB_NATIVE_TOKEN
     /// @param token The token address to normalize
     /// @return normalizedToken The normalized token address (JB_NATIVE_TOKEN for native ETH/WETH)
     function _normalizeToken(address token) internal view returns (address) {
         return (token == UNISWAP_NATIVE_ETH || token == WETH) ? JB_NATIVE_TOKEN : token;
+    }
+
+    /// @notice Normalizes a token address for terminal interactions
+    /// @dev Only normalizes native ETH to JB_NATIVE_TOKEN. WETH is only used when routing through v3,
+    ///      not when routing through Juicebox, so we don't need to handle WETH normalization here.
+    /// @param token The token address to normalize
+    /// @return normalizedToken The normalized token address (JB_NATIVE_TOKEN only for native ETH)
+    function _normalizeTokenForTerminal(address token) internal view returns (address) {
+        return token == UNISWAP_NATIVE_ETH ? JB_NATIVE_TOKEN : token;
     }
 
     /// @notice Converts native ETH address to WETH for Uniswap v3 operations
@@ -799,9 +806,9 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
     /// @param token The token address
     /// @return terminal The primary terminal, or address(0) if not found
     function _getPrimaryTerminal(uint256 projectId, address token) internal view returns (IJBTerminal) {
-        // Normalize token to Juicebox's native token representation before lookup
-        // This ensures consistency with price calculations and handles native ETH correctly
-        address normalized = _normalizeToken(token);
+        // Only normalize native ETH to JB_NATIVE_TOKEN for terminal lookup
+        // WETH is only used when routing through v3, not when routing through Juicebox
+        address normalized = _normalizeTokenForTerminal(token);
         try DIRECTORY.primaryTerminalOf(projectId, normalized) returns (IJBTerminal t) {
             return t;
         } catch {
@@ -922,26 +929,7 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
         return (BaseHook.afterRemoveLiquidity.selector, BalanceDelta.wrap(0));
     }
 
-    /// @notice Check if a token is a Juicebox project token and register it
-    /// @param token The token address to check
-    /// @param poolId The pool ID to register the project for
-    /// @return projectId The project ID if found, 0 otherwise
-    function _checkAndRegisterJuiceboxToken(address token, PoolId poolId) internal returns (uint256 projectId) {
-        // Check if the token is a Juicebox project token
-        try TOKENS.projectIdOf(IJBToken(token)) returns (uint256 _projectId) {
-            if (_projectId != 0) {
-                projectId = _projectId;
-                // Cache the project ID for this pool if not already cached
-                if (projectIdOf[poolId] == 0) {
-                    projectIdOf[poolId] = projectId;
-                }
-                return projectId;
-            }
-        } catch {
-            // Token is not a Juicebox project token
-        }
-        return 0;
-    }
+
 
     /// @notice Hook called before a swap
     /// @dev Compares prices between Uniswap and Juicebox, routes to cheaper option
@@ -969,32 +957,16 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
         // Get input amount (amountSpecified is negative for exact input)
         uint256 amountIn = uint256(-params.amountSpecified);
 
-        // Check if there's a Juicebox project for this pool (auto-detect or use cached)
-        uint256 projectId = projectIdOf[poolId];
-
-        // Cache token project IDs to avoid redundant calls
-        uint256 tokenInProjectId;
-        uint256 tokenOutProjectId;
-
-        // If not cached, try to detect Juicebox project token
-        if (projectId == 0) {
-            // Check both input and output tokens for Juicebox projects
-            tokenOutProjectId = _checkAndRegisterJuiceboxToken(tokenOut, poolId);
-            tokenInProjectId = _checkAndRegisterJuiceboxToken(tokenIn, poolId);
-            projectId = tokenOutProjectId != 0 ? tokenOutProjectId : tokenInProjectId;
-            if (projectId == 0) {
-                // No Juicebox project, proceed with normal Uniswap swap
-                return (BaseHook.beforeSwap.selector, BeforeSwapDeltaLibrary.ZERO_DELTA, 0);
-            }
-        } else {
-            // Project ID is cached, but we still need to check which token is the JB token
-            tokenInProjectId = _checkAndRegisterJuiceboxToken(tokenIn, poolId);
-            tokenOutProjectId = _checkAndRegisterJuiceboxToken(tokenOut, poolId);
-        }
+        // Check if either token is a JB token by looking up projectId dynamically
+        uint256 tokenInProjectId = TOKENS.projectIdOf(IJBToken(tokenIn));
+        uint256 tokenOutProjectId = TOKENS.projectIdOf(IJBToken(tokenOut));
 
         // Determine if we're buying or selling JB tokens
-        bool isSellingJBToken = tokenInProjectId == projectId;
-        bool isBuyingJBToken = tokenOutProjectId == projectId;
+        bool isSellingJBToken = tokenInProjectId != 0;
+        bool isBuyingJBToken = tokenOutProjectId != 0;
+        
+        // Get the projectId (whichever token is the JB token)
+        uint256 projectId = isSellingJBToken ? tokenInProjectId : (isBuyingJBToken ? tokenOutProjectId : 0);
 
         uint256 juiceboxExpectedOutput;
 
@@ -1107,8 +1079,9 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
         // Take input from PoolManager (pre-deposited by JuiceboxSwapRouter)
         poolManager.take(inputCurrency, address(this), amountIn);
 
-        // Normalize token for Juicebox (WETH/native ETH → JB_NATIVE_TOKEN)
-        address normalizedTokenIn = _normalizeToken(tokenIn);
+        // Normalize token for Juicebox terminal interaction
+        // Only normalize native ETH to JB_NATIVE_TOKEN (WETH only appears when routing through v3)
+        address normalizedTokenIn = _normalizeTokenForTerminal(tokenIn);
 
         // Approve the terminal to spend the tokens if needed
         if (!inputCurrency.isAddressZero()) {
@@ -1117,11 +1090,11 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
 
         if (isBuying) {
             // Buying JB tokens: Pay to Juicebox and receive JB tokens
-            // Use normalized token for Juicebox API (JB_NATIVE_TOKEN for native ETH/WETH)
+            // Only native ETH is normalized to JB_NATIVE_TOKEN (WETH only appears when routing through v3)
             uint256 payValue = inputCurrency.isAddressZero() ? amountIn : 0;
             outputReceived =terminal.pay{ value: payValue }(
                 projectId,
-                normalizedTokenIn, // Use normalized token (JB_NATIVE_TOKEN for native ETH/WETH)
+                normalizedTokenIn, // Native ETH → JB_NATIVE_TOKEN
                 amountIn,
                 address(this), // Tokens come to hook
                 0, // No minimum tokens required
@@ -1130,15 +1103,15 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
             );
         } else {
             // Selling JB tokens: Cash out JB tokens and receive output currency
-            // Normalize output token for Juicebox (WETH/native ETH → JB_NATIVE_TOKEN)
-            address normalizedTokenOut = _normalizeToken(tokenOut);
+            // Only normalize native ETH to JB_NATIVE_TOKEN (WETH only appears when routing through v3)
+            address normalizedTokenOut = _normalizeTokenForTerminal(tokenOut);
             // Call the terminal's cash out function to get the output tokens
             outputReceived = IJBMultiTerminal(address(terminal))
                 .cashOutTokensOf(
                     address(this), // holder (hook owns the JB tokens)
                     projectId,
                     amountIn, // cashOutCount: Amount of JB tokens to cash out
-                    normalizedTokenOut, // Use normalized token (JB_NATIVE_TOKEN for native ETH/WETH)
+                    normalizedTokenOut, // Native ETH → JB_NATIVE_TOKEN
                     0, // minTokensReclaimed: No minimum tokens required
                     payable(address(this)), // beneficiary (hook)
                     bytes("") // Empty metadata

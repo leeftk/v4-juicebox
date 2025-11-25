@@ -736,8 +736,7 @@ contract JuiceboxHookTest is Test {
 
         jbSwapRouter.swap(key, params);
 
-        // Now the project ID should be cached
-        assertEq(hook.projectIdOf(id), 123, "Project ID should be cached as 123");
+        // Swap should have executed successfully (project ID is detected dynamically, no cache needed)
     }
 
     /// Given the Juicebox swap router is configured
@@ -950,9 +949,7 @@ contract JuiceboxHookTest is Test {
 
         jbSwapRouter.swap(key, params);
 
-        // After swap, projectId should be cached for the pool
-        uint256 cachedProjectId = hook.projectIdOf(id);
-        assertEq(cachedProjectId, 123, "Project ID should be cached");
+        // Swap should have executed successfully (project ID is detected dynamically, no cache needed)
     }
 
     // ============================================
@@ -1183,9 +1180,6 @@ contract JuiceboxHookTest is Test {
 
         jbSwapRouter.swap(key, params);
 
-        // Verify that the juicebox routing was executed
-        assertEq(hook.projectIdOf(key.toId()), 123, "Juicebox routing should be executed");
-
         // Assert that the project token (token0) balance increased
         uint256 finalToken0 = token0.balanceOf(address(this));
         uint256 token0Received = finalToken0 - initialToken0;
@@ -1217,9 +1211,6 @@ contract JuiceboxHookTest is Test {
         });
 
         jbSwapRouter.swap(key, params);
-
-        // Verify that the juicebox routing was executed
-        assertEq(hook.projectIdOf(key.toId()), 123, "Juicebox routing should be executed");
 
         // Assert that the project token (token0) balance increased
         uint256 finalToken0 = token0.balanceOf(address(this));
@@ -1325,9 +1316,8 @@ contract JuiceboxHookTest is Test {
             manager.initialize(newKey, SQRT_PRICE_1_1);
             PoolId newId = newKey.toId();
 
-            // The hook should auto-detect and cache the project ID on first interaction
-            // We can check if it would be cached by checking the mapping
-            assertEq(hook.projectIdOf(newId), 0, "Should not be cached yet");
+            // The hook detects project IDs dynamically during swaps (no cache needed)
+            // This test just verifies the pool can be initialized
         }
     }
 

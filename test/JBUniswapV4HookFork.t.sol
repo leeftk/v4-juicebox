@@ -974,15 +974,13 @@ contract JBUniswapV4HookForkTest is Test {
         try jbSwapRouter.swap(useKey, testSwap) {
             (string memory route, uint256 expectedTokens) = _getLastBestRouteFromLogs();
 
-            // Check for primary terminal (same check as in JBUniswapV4Hook.sol lines 924-928)
-            // Hook normalizes WETH to JB_NATIVE_TOKEN before lookup, so we need to do the same
+            // Check for primary terminal (same check as in JBUniswapV4Hook.sol)
+            // When buying with WETH, we need to look up terminal that accepts native ETH (JB_NATIVE_TOKEN)
+            // because terminals don't accept WETH directly - we'd need to unwrap WETH first
             IJBTerminal jbTerminal;
-            address tokenIn = WETH;
-            address normalizedTokenIn = (tokenIn == address(0) || tokenIn == WETH)
-                ? address(0x000000000000000000000000000000000000EEEe)
-                : tokenIn;
+            address terminalToken = address(0x000000000000000000000000000000000000EEEe); // JB_NATIVE_TOKEN
             try IJBDirectory(MAINNET_JB_DIRECTORY)
-                .primaryTerminalOf(projectId, normalizedTokenIn) returns (IJBTerminal t) {
+                .primaryTerminalOf(projectId, terminalToken) returns (IJBTerminal t) {
                 jbTerminal = t;
             } catch {
                 jbTerminal = IJBTerminal(address(0));
