@@ -806,7 +806,7 @@ contract JBUniswapV4HookForkTest is Test {
         try hook.estimateUniswapV3Output(WETH, NANA, amountIn, false) returns (uint256 o) {
             v3Out = o;
         } catch {}
-        
+
         uint256 jbOut = 0;
         uint256 projectId = IJBTokens(MAINNET_JB_TOKENS).projectIdOf(IJBToken(NANA));
         if (projectId != 0) {
@@ -814,7 +814,7 @@ contract JBUniswapV4HookForkTest is Test {
                 jbOut = o;
             } catch {}
         }
-        
+
         // Only test v3 routing if v3 is better than Juicebox
         if (v3Out > jbOut && v3Out > 0) {
             vm.recordLogs();
@@ -978,8 +978,11 @@ contract JBUniswapV4HookForkTest is Test {
             // Hook normalizes WETH to JB_NATIVE_TOKEN before lookup, so we need to do the same
             IJBTerminal jbTerminal;
             address tokenIn = WETH;
-            address normalizedTokenIn = (tokenIn == address(0) || tokenIn == WETH) ? address(0x000000000000000000000000000000000000EEEe) : tokenIn;
-            try IJBDirectory(MAINNET_JB_DIRECTORY).primaryTerminalOf(projectId, normalizedTokenIn) returns (IJBTerminal t) {
+            address normalizedTokenIn = (tokenIn == address(0) || tokenIn == WETH)
+                ? address(0x000000000000000000000000000000000000EEEe)
+                : tokenIn;
+            try IJBDirectory(MAINNET_JB_DIRECTORY)
+                .primaryTerminalOf(projectId, normalizedTokenIn) returns (IJBTerminal t) {
                 jbTerminal = t;
             } catch {
                 jbTerminal = IJBTerminal(address(0));
@@ -1074,11 +1077,11 @@ contract JBUniswapV4HookForkTest is Test {
             (string memory route,) = _getLastBestRouteFromLogs();
 
             IJBTerminal jbTerminal;
-            address tokenIn = NANA;
-            // Hook normalizes tokens before lookup (WETH/native ETH -> JB_NATIVE_TOKEN)
-            // NANA doesn't need normalization, but we check with the raw token as hook does for non-WETH tokens
-            address normalizedTokenIn = (tokenIn == address(0) || tokenIn == WETH) ? address(0x000000000000000000000000000000000000EEEe) : tokenIn;
-            try IJBDirectory(MAINNET_JB_DIRECTORY).primaryTerminalOf(projectId, normalizedTokenIn) returns (IJBTerminal t) {
+            // When selling (NANA -> WETH), we need a terminal that has WETH (the output token), not NANA
+            // Hook normalizes WETH to JB_NATIVE_TOKEN before lookup
+            address normalizedWETH = address(0x000000000000000000000000000000000000EEEe);
+            try IJBDirectory(MAINNET_JB_DIRECTORY)
+                .primaryTerminalOf(projectId, normalizedWETH) returns (IJBTerminal t) {
                 jbTerminal = t;
             } catch {
                 jbTerminal = IJBTerminal(address(0));
@@ -1280,19 +1283,28 @@ contract JBUniswapV4HookForkTest is Test {
             jbOut = o;
         } catch {}
 
-        // Check for primary terminal that manages NANA (the input token when selling)
+        // Check for primary terminal that manages WETH (the output token when selling/cashing out)
+        // When cashing out, we need a terminal that has the token we're cashing out TO (WETH), not the JB token (NANA)
         IJBTerminal jbTerminal;
-        try IJBDirectory(MAINNET_JB_DIRECTORY).primaryTerminalOf(projectId, NANA) returns (IJBTerminal t) {
+        // Hook normalizes WETH to JB_NATIVE_TOKEN before lookup
+        address normalizedWETH = address(0x000000000000000000000000000000000000EEEe);
+        try IJBDirectory(MAINNET_JB_DIRECTORY).primaryTerminalOf(projectId, normalizedWETH) returns (IJBTerminal t) {
             jbTerminal = t;
         } catch {
             jbTerminal = IJBTerminal(address(0));
         }
 
-        // Only proceed if Juicebox is better and terminal exists
-        if (jbOut <= v4Out || jbOut == 0 || address(jbTerminal) == address(0)) {
+        // Only proceed if Juicebox is better than Uniswap
+        // Don't skip if terminal doesn't exist - let the swap run to verify the hook's behavior
+        // If hook looks up wrong terminal, it will route through Uniswap and test will fail
+        if (jbOut <= v4Out || jbOut == 0) {
             vm.stopPrank();
-            return; // Juicebox not better or no terminal, can't test this scenario
+            return; // Juicebox not better, can't test this scenario
         }
+
+        // If no terminal exists, hook should route through Uniswap (not Juicebox)
+        // The route assertion below will catch bugs where hook looks up wrong terminal
+        bool expectJuiceboxRoute = address(jbTerminal) != address(0);
 
         // Record initial balances
         uint256 initialUserWETH = IERC20(WETH).balanceOf(user);
@@ -1313,9 +1325,22 @@ contract JBUniswapV4HookForkTest is Test {
         });
 
         try jbSwapRouter.swap(key, sellSwap) {
-            // Verify route was Juicebox
+            // Verify route matches expectation based on terminal availability
             (string memory route,) = _getLastBestRouteFromLogs();
-            assertEq(keccak256(bytes(route)), keccak256("juicebox"), "Should route through Juicebox");
+            if (expectJuiceboxRoute) {
+                assertEq(
+                    keccak256(bytes(route)), keccak256("juicebox"), "Should route through Juicebox when terminal exists"
+                );
+            } else {
+                // If no terminal exists, hook should route through Uniswap (v4 or v3)
+                // This catches bugs where hook looks up wrong terminal
+                assertTrue(
+                    keccak256(bytes(route)) == keccak256("v4") || keccak256(bytes(route)) == keccak256("v3"),
+                    "Should route through Uniswap when no terminal exists"
+                );
+                vm.stopPrank();
+                return; // No point checking balances if routing through Uniswap
+            }
 
             // Verify user received WETH (proving cashOutTokensOf succeeded and hook settled WETH back)
             uint256 finalUserWETH = IERC20(WETH).balanceOf(user);
@@ -1369,8 +1394,10 @@ contract JBUniswapV4HookForkTest is Test {
         // Add liquidity to v4 pool (native ETH + NANA)
         deal(NANA, user, 50_000 ether);
         IERC20(NANA).approve(address(modifyLiquidityRouter), type(uint256).max);
-        
-        modifyLiquidityRouter.modifyLiquidity{value: 10 ether}(
+
+        modifyLiquidityRouter.modifyLiquidity{
+            value: 10 ether
+        }(
             nativeKey,
             ModifyLiquidityParams({tickLower: -60, tickUpper: 60, liquidityDelta: 10 ether, salt: bytes32(0)}),
             ZERO_BYTES
@@ -1378,13 +1405,13 @@ contract JBUniswapV4HookForkTest is Test {
 
         // Check if v3 pool exists for WETH/NANA
         address v3Pool = IUniswapV3Factory(MAINNET_V3_FACTORY).getPool(WETH, NANA, 10000);
-        
+
         if (v3Pool != address(0)) {
             // Test estimation: native ETH (address(0)) should be converted to WETH internally
             // The hook's _convertToV3Token converts address(0) -> WETH before v3 operations
             // So when estimating, we call with WETH and NANA (the converted addresses)
             uint256 amountIn = 1 ether;
-            
+
             // The hook's estimateUniswapV3Output expects (token0, token1) where token0 < token1
             // After conversion, WETH < NANA, so we call with (WETH, NANA, amountIn, zeroForOne=true)
             // This simulates what happens internally when the hook processes a native ETH swap
@@ -1394,7 +1421,7 @@ contract JBUniswapV4HookForkTest is Test {
             } catch {
                 // If estimation fails, that's okay - we just verify it doesn't revert with wrong addresses
             }
-            
+
             // Estimation should return a positive value if v3 pool exists and has liquidity
             // This proves that the native ETH -> WETH conversion works correctly
             // Note: This might be 0 if pool has no liquidity or other issues, which is fine
@@ -1406,7 +1433,7 @@ contract JBUniswapV4HookForkTest is Test {
             try hook.estimateUniswapV3Output(WETH, NANA, 1 ether, true) returns (uint256 out) {
                 estimatedOut = out;
             } catch {}
-            
+
             // Should return 0 when no pool exists
             assertEq(estimatedOut, 0, "Should return 0 when no v3 pool exists");
         }

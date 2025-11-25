@@ -2,6 +2,7 @@
 pragma solidity ^0.8.24;
 
 import {BaseHook} from "@uniswap/v4-periphery/src/utils/BaseHook.sol";
+import {CurrencySettler} from "@openzeppelin/uniswap-hooks/src/utils/CurrencySettler.sol";
 import {Hooks} from "@uniswap/v4-core/src/libraries/Hooks.sol";
 import {IPoolManager} from "@uniswap/v4-core/src/interfaces/IPoolManager.sol";
 import {PoolKey} from "@uniswap/v4-core/src/types/PoolKey.sol";
@@ -21,6 +22,7 @@ import {TickMath} from "@uniswap/v4-core/src/libraries/TickMath.sol";
 import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+
 // WETH interface for wrapping/unwrapping
 interface IWETH9 {
     function deposit() external payable;
@@ -279,10 +281,7 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
         // This converts paymentAmount to baseCurrency, then multiplies by tokensPerBaseCurrency
         // Use FullMath for safe multiplication to prevent overflow
         expectedTokens = _calculateTokensWithCurrency(
-            tokensPerBaseCurrency,
-            paymentAmount,
-            paymentTokenDecimals,
-            baseCurrencyPerPaymentToken
+            tokensPerBaseCurrency, paymentAmount, paymentTokenDecimals, baseCurrencyPerPaymentToken
         );
     }
 
@@ -729,14 +728,13 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
     /// @notice Settles output tokens back to PoolManager
     /// @param outputCurrency The output currency to settle
     /// @param amount The amount to settle
+    /// @dev Uses OpenZeppelin's CurrencySettler library to ensure correct settlement order
+    /// @dev This handles sync -> transfer -> settle in the correct order for flash-accounting safety
     function _settleOutput(Currency outputCurrency, uint256 amount) internal {
-        if (!outputCurrency.isAddressZero()) {
-            poolManager.sync(outputCurrency);
-            IERC20(Currency.unwrap(outputCurrency)).safeTransfer(address(poolManager), amount);
-            poolManager.settle();
-        } else {
-            poolManager.settle{value: amount}();
-        }
+        // Use CurrencySettler library to ensure correct settlement order and flash-accounting safety
+        // payer = address(this) since we're settling tokens we received
+        // burn = false since we're transferring ERC-20 tokens, not burning ERC-6909 tokens
+        CurrencySettler.settle(outputCurrency, poolManager, address(this), amount, false);
     }
 
     /// @notice Normalizes a token address to Juicebox's native token representation
@@ -782,9 +780,8 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
         uint256 baseCurrencyPerPaymentToken
     ) internal pure returns (uint256 expectedTokens) {
         // Normalize payment amount to 18 decimals
-        uint256 paymentAmount18 = paymentTokenDecimals == 18
-            ? paymentAmount
-            : (paymentAmount * 1e18) / (10 ** paymentTokenDecimals);
+        uint256 paymentAmount18 =
+            paymentTokenDecimals == 18 ? paymentAmount : (paymentAmount * 1e18) / (10 ** paymentTokenDecimals);
 
         // Calculate tokens: if price conversion is 1:1, simplify; otherwise apply price conversion
         if (baseCurrencyPerPaymentToken == 1e18) {
@@ -1043,10 +1040,11 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
         }
 
         // Check if Juicebox is better than the best Uniswap option
-        // Only consider Juicebox if a valid terminal exists for the input token
+        // Only consider Juicebox if a valid terminal exists for the appropriate token
         // For buying: terminal must support the payment token (tokenIn)
-        // For selling: terminal must manage the JB token (tokenIn is JB token in that branch)
-        IJBTerminal jbTerminal = _getPrimaryTerminal(projectId, tokenIn);
+        // For selling: terminal must have the output token (tokenOut) that we're cashing out to
+        address terminalToken = isBuyingJBToken ? tokenIn : tokenOut;
+        IJBTerminal jbTerminal = _getPrimaryTerminal(projectId, terminalToken);
         bool jbTerminalAvailable = address(jbTerminal) != address(0) && address(jbTerminal).code.length > 0;
         bool juiceboxBetterThanUniswap = jbTerminalAvailable && juiceboxExpectedOutput > bestExpectedTokens;
 

@@ -122,9 +122,8 @@ contract SlippageToleranceTest is Test {
         bool zeroForOne = terminalToken == token0;
         uint256 base = FullMath.mulDiv(uint256(amountIn), 10 * hook.TWAP_SLIPPAGE_DENOMINATOR(), uint256(liquidity));
         uint256 sqrtP = uint256(TickMath.getSqrtPriceAtTick(TICK_ONE_TO_ONE));
-        uint256 raw = zeroForOne
-            ? FullMath.mulDiv(base, sqrtP, uint256(1) << 96)
-            : FullMath.mulDiv(base, uint256(1) << 96, sqrtP);
+        uint256 raw =
+            zeroForOne ? FullMath.mulDiv(base, sqrtP, uint256(1) << 96) : FullMath.mulDiv(base, uint256(1) << 96, sqrtP);
 
         if (raw == 0) {
             // When raw is zero, implementation returns the UNCERTAIN floor directly

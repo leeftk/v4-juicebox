@@ -886,7 +886,9 @@ contract JuiceboxHookTest is Test {
         assertFalse(permissions.beforeAddLiquidity, "Should not have beforeAddLiquidity permission");
         assertTrue(permissions.afterAddLiquidity, "Should have afterAddLiquidity permission for oracle observations");
         assertFalse(permissions.beforeRemoveLiquidity, "Should not have beforeRemoveLiquidity permission");
-        assertTrue(permissions.afterRemoveLiquidity, "Should have afterRemoveLiquidity permission for oracle observations");
+        assertTrue(
+            permissions.afterRemoveLiquidity, "Should have afterRemoveLiquidity permission for oracle observations"
+        );
         assertTrue(permissions.beforeSwap, "Should have beforeSwap permission");
         assertTrue(permissions.afterSwap, "Should have afterSwap permission for oracle observations");
         assertFalse(permissions.beforeDonate, "Should not have beforeDonate permission");
@@ -1252,7 +1254,7 @@ contract JuiceboxHookTest is Test {
     /// Then the result should account for the non-1:1 price conversion
     function testCalculateExpectedTokensWithNonOneToOnePrice() public {
         mockJBController.setWeight(123, 1000e18);
-        
+
         // Set price: 2 token1 = 1 ETH (so baseCurrencyPerPaymentToken = 0.5e18)
         // This means 1 token1 = 0.5 ETH, so baseCurrencyPerPaymentToken = 0.5e18
         // Note: pricePerUnitOf(projectId, baseCurrency, paymentCurrencyId, 18) returns baseCurrency per paymentCurrencyId
@@ -1260,15 +1262,15 @@ contract JuiceboxHookTest is Test {
         uint32 token1CurrencyId = uint32(uint160(address(token1)));
         uint256 baseCurrency = 1; // ETH
         mockJBPrices.setPricePerUnitOf(123, baseCurrency, token1CurrencyId, 0.5e18);
-        
+
         // Calculate expected tokens for 2 ether of token1
         // Expected: (1000e18 * 2e18 * 0.5e18) / (1e18 * 1e18) = 1000e18
         uint256 expectedTokens = hook.calculateExpectedTokensWithCurrency(123, address(token1), 2 ether);
-        
+
         // Manual calculation using FullMath to match the hook's logic
         uint256 intermediate = FullMath.mulDiv(1000e18, 2 ether, 1e18);
         uint256 calculated = FullMath.mulDiv(intermediate, 0.5e18, 1e18);
-        
+
         assertEq(expectedTokens, calculated, "Non-1:1 price calculation should match");
         assertEq(expectedTokens, 1000 ether, "Should receive 1000 tokens for 2 token1 at 0.5 ETH/token");
     }
@@ -2190,7 +2192,7 @@ contract JuiceboxHookTest is Test {
     function testV3EstimationWithNativeETH() public {
         // Deploy mock WETH
         MockWETH mockWETH = new MockWETH();
-        
+
         // Create hook with mock WETH
         uint160 flags = uint160(
             Hooks.AFTER_INITIALIZE_FLAG | Hooks.BEFORE_SWAP_FLAG | Hooks.AFTER_SWAP_FLAG
@@ -2209,14 +2211,11 @@ contract JuiceboxHookTest is Test {
             address(mockWETH)
         );
 
-        (, bytes32 salt) = HookMiner.find(
-            address(this),
-            flags,
-            type(JBUniswapV4Hook).creationCode,
-            constructorArgs
-        );
+        (, bytes32 salt) = HookMiner.find(address(this), flags, type(JBUniswapV4Hook).creationCode, constructorArgs);
 
-        JBUniswapV4Hook nativeETHHook = new JBUniswapV4Hook{salt: salt}(
+        JBUniswapV4Hook nativeETHHook = new JBUniswapV4Hook{
+            salt: salt
+        }(
             IPoolManager(address(manager)),
             IJBTokens(address(mockJBTokens)),
             IJBDirectory(address(mockJBDirectory)),
@@ -2228,9 +2227,8 @@ contract JuiceboxHookTest is Test {
         );
 
         // Create v3 pool for WETH/token1
-        MockUniswapV3Pool v3PoolWETH = MockUniswapV3Pool(
-            mockV3Factory.createPool(address(mockWETH), address(token1), 10000)
-        );
+        MockUniswapV3Pool v3PoolWETH =
+            MockUniswapV3Pool(mockV3Factory.createPool(address(mockWETH), address(token1), 10000));
         v3PoolWETH.setLiquidity(1000e18);
         v3PoolWETH.setPriceMultiplier(1.5e18);
 
@@ -2238,7 +2236,7 @@ contract JuiceboxHookTest is Test {
         // When calling estimateUniswapV3Output with address(0), it should internally convert to WETH
         // and find the WETH/token1 pool
         uint256 amountIn = 1 ether;
-        
+
         // The hook should convert address(0) to WETH internally
         // So we test with WETH directly (which is what happens internally)
         uint256 estimatedOut = nativeETHHook.estimateUniswapV3Output(
@@ -2257,7 +2255,7 @@ contract JuiceboxHookTest is Test {
     function testV3RoutingWithNativeETH_NoV3Pool() public {
         // Deploy mock WETH
         MockWETH mockWETH = new MockWETH();
-        
+
         // Create hook with mock WETH
         uint160 flags = uint160(
             Hooks.AFTER_INITIALIZE_FLAG | Hooks.BEFORE_SWAP_FLAG | Hooks.AFTER_SWAP_FLAG
@@ -2276,14 +2274,11 @@ contract JuiceboxHookTest is Test {
             address(mockWETH)
         );
 
-        (, bytes32 salt) = HookMiner.find(
-            address(this),
-            flags,
-            type(JBUniswapV4Hook).creationCode,
-            constructorArgs
-        );
+        (, bytes32 salt) = HookMiner.find(address(this), flags, type(JBUniswapV4Hook).creationCode, constructorArgs);
 
-        JBUniswapV4Hook nativeETHHook = new JBUniswapV4Hook{salt: salt}(
+        JBUniswapV4Hook nativeETHHook = new JBUniswapV4Hook{
+            salt: salt
+        }(
             IPoolManager(address(manager)),
             IJBTokens(address(mockJBTokens)),
             IJBDirectory(address(mockJBDirectory)),
@@ -2310,7 +2305,9 @@ contract JuiceboxHookTest is Test {
         vm.deal(address(this), 100 ether);
         token1.mint(address(this), 1000 ether);
         token1.approve(address(modifyLiquidityRouter), 1000 ether);
-        modifyLiquidityRouter.modifyLiquidity{value: 10 ether}(
+        modifyLiquidityRouter.modifyLiquidity{
+            value: 10 ether
+        }(
             nativeKey,
             ModifyLiquidityParams({tickLower: -60, tickUpper: 60, liquidityDelta: 10 ether, salt: bytes32(0)}),
             ZERO_BYTES
@@ -2326,15 +2323,12 @@ contract JuiceboxHookTest is Test {
         token1.approve(address(nativeSwapRouter), type(uint256).max);
 
         // Swap should succeed but route through v4 (not v3, since no WETH pool exists)
-        SwapParams memory params = SwapParams({
-            zeroForOne: true,
-            amountSpecified: -1 ether,
-            sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1
-        });
+        SwapParams memory params =
+            SwapParams({zeroForOne: true, amountSpecified: -1 ether, sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1});
 
         // Should not revert - should fall back to v4
         nativeSwapRouter.swap{value: 1 ether}(nativeKey, params);
-        
+
         // Test passes if no revert (v3 estimation returns 0, falls back to v4)
     }
 }
