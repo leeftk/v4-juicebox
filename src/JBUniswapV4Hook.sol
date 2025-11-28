@@ -51,6 +51,8 @@ import {IJBTerminalStore} from "@bananapus/core-v5/interfaces/IJBTerminalStore.s
 
 import {JBRuleset} from "@bananapus/core-v5/structs/JBRuleset.sol";
 import {JBRulesetMetadata} from "@bananapus/core-v5/structs/JBRulesetMetadata.sol";
+import {JBRulesetMetadataResolver} from "@bananapus/core-v5/libraries/JBRulesetMetadataResolver.sol";
+import {JBConstants} from "@bananapus/core-v5/libraries/JBConstants.sol";
 
 // Import PRB Math for logarithmic functions
 import {UD60x18} from "../lib/prb-math/src/ud60x18/ValueType.sol";
@@ -228,15 +230,18 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
         view
         returns (uint256 expectedTokens)
     {
-        // Get the project's weight (tokens per ETH)
+        // Get the project's weight (tokens per ETH) and reserved rate
         uint256 tokensPerBaseCurrency;
         // Get the currency Id for the `weight`.
         uint256 baseCurrency;
+        uint16 reservedPercent;
         try CONTROLLER.currentRulesetOf(
             projectId
         ) returns (JBRuleset memory ruleset, JBRulesetMetadata memory metadata) {
             tokensPerBaseCurrency = ruleset.weight;
             baseCurrency = metadata.baseCurrency;
+            // Get reserved percent from ruleset metadata
+            reservedPercent = JBRulesetMetadataResolver.reservedPercent(ruleset);
         } catch {
             return 0;
         }
@@ -277,9 +282,22 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
         // Formula: expectedTokens = (tokensPerBaseCurrency * paymentAmount * baseCurrencyPerPaymentToken) / (1e18 * paymentTokenDecimals)
         // This converts paymentAmount to baseCurrency, then multiplies by tokensPerBaseCurrency
         // Use FullMath for safe multiplication to prevent overflow
-        expectedTokens = _calculateTokensWithCurrency(
+        uint256 estimatedTokens = _calculateTokensWithCurrency(
             tokensPerBaseCurrency, paymentAmount, paymentTokenDecimals, baseCurrencyPerPaymentToken
         );
+
+        // Apply reserved rate: beneficiary only receives (1 - reservedPercent) of tokens
+        // Reserved tokens go to team/contributors, not to the payer
+        // Formula: actualTokens = estimatedTokens * (MAX_RESERVED_PERCENT - reservedPercent) / MAX_RESERVED_PERCENT
+        if (reservedPercent > 0) {  
+            expectedTokens = FullMath.mulDiv(
+                estimatedTokens,
+                uint256(JBConstants.MAX_RESERVED_PERCENT - reservedPercent),
+                uint256(JBConstants.MAX_RESERVED_PERCENT)
+            );
+        } else {
+            expectedTokens = estimatedTokens;
+        }
     }
 
     /// @notice Calculate expected output from selling JB tokens

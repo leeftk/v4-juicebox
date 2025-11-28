@@ -38,6 +38,7 @@ import {
 import {IUniswapV3Factory} from "../src/interfaces/IUniswapV3Factory.sol";
 import {JBRuleset} from "@bananapus/core-v5/structs/JBRuleset.sol";
 import {JBRulesetMetadata} from "@bananapus/core-v5/structs/JBRulesetMetadata.sol";
+import {JBRulesetMetadataResolver} from "@bananapus/core-v5/libraries/JBRulesetMetadataResolver.sol";
 import {IJBRulesetApprovalHook} from "@bananapus/core-v5/interfaces/IJBRulesetApprovalHook.sol";
 import {HookMiner} from "@uniswap/v4-periphery/src/utils/HookMiner.sol";
 
@@ -179,9 +180,14 @@ contract MockJBMultiTerminal {
 
 contract MockJBController {
     mapping(uint256 => uint256) public weights;
+    mapping(uint256 => uint16) public reservedPercents;
 
     function setWeight(uint256 projectId, uint256 weight) external {
         weights[projectId] = weight;
+    }
+
+    function setReservedPercent(uint256 projectId, uint16 reservedPercent) external {
+        reservedPercents[projectId] = reservedPercent;
     }
 
     function currentRulesetOf(uint256 projectId)
@@ -189,20 +195,8 @@ contract MockJBController {
         view
         returns (JBRuleset memory ruleset, JBRulesetMetadata memory metadata)
     {
-        ruleset = JBRuleset({
-            cycleNumber: 1,
-            id: 1,
-            basedOnId: 0,
-            start: uint48(block.timestamp),
-            duration: 0,
-            weight: uint112(weights[projectId]),
-            weightCutPercent: 0,
-            approvalHook: IJBRulesetApprovalHook(address(0)),
-            metadata: 0
-        });
-
         metadata = JBRulesetMetadata({
-            reservedPercent: 0,
+            reservedPercent: reservedPercents[projectId],
             cashOutTaxRate: 0,
             baseCurrency: 1,
             pausePay: false,
@@ -221,6 +215,19 @@ contract MockJBController {
             useDataHookForCashOut: false,
             dataHook: address(0),
             metadata: 0
+        });
+
+        // Pack metadata into ruleset.metadata so reservedPercent can be extracted
+        ruleset = JBRuleset({
+            cycleNumber: 1,
+            id: 1,
+            basedOnId: 0,
+            start: uint48(block.timestamp),
+            duration: 0,
+            weight: uint112(weights[projectId]),
+            weightCutPercent: 0,
+            approvalHook: IJBRulesetApprovalHook(address(0)),
+            metadata: JBRulesetMetadataResolver.packRulesetMetadata(metadata)
         });
     }
 }
@@ -1237,6 +1244,52 @@ contract JuiceboxHookTest is Test {
         // Should match simple calculation for ETH
         uint256 calculated = (weight * paymentAmount) / 1e18;
         assertEq(expectedTokens, calculated, "ETH payment calculation should match");
+    }
+
+    /// Given project 123 has a weight of 1000e18 and reserved percent of 50%
+    /// When calculating expected tokens for 1 ether
+    /// Then the result should account for reserved percent (user gets 50% of theoretical tokens)
+    function testCalculateExpectedTokensWithReservedPercent() public {
+        uint256 weight = 1000e18;
+        uint16 reservedPercent = 5000; // 50% reserved
+        uint256 paymentAmount = 1 ether;
+
+        mockJBController.setWeight(123, weight);
+        mockJBController.setReservedPercent(123, reservedPercent);
+
+        uint256 expectedTokens = hook.calculateExpectedTokensWithCurrency(123, address(0), paymentAmount);
+
+        // Theoretical tokens = (weight * paymentAmount) / 1e18 = (1000e18 * 1e18) / 1e18 = 1000e18
+        uint256 theoreticalTokens = (weight * paymentAmount) / 1e18;
+        
+        // Expected tokens after reserved percent = theoreticalTokens * (10000 - 5000) / 10000
+        uint256 expectedAfterReserved = (theoreticalTokens * (10000 - reservedPercent)) / 10000;
+
+        assertEq(expectedTokens, expectedAfterReserved, "Quote should account for reserved percent");
+        assertEq(expectedTokens, 500e18, "User should receive 50% of tokens (500 tokens)");
+    }
+
+    /// Given project 123 has a weight of 1000e18 and reserved percent of 50%
+    /// When calculating expected tokens for 1 ether
+    /// Then the result should account for reserved percent (user gets 50% of theoretical tokens)
+    function testCalculateExpectedTokensWithReservedPercent_62Percent() public {
+        uint256 weight = 10000e18;
+        uint16 reservedPercent = 6200; // 62% reserved (matches fork test scenario)
+        uint256 paymentAmount = 1 ether;
+
+        mockJBController.setWeight(123, weight);
+        mockJBController.setReservedPercent(123, reservedPercent);
+
+        uint256 expectedTokens = hook.calculateExpectedTokensWithCurrency(123, address(0), paymentAmount);
+
+        // Theoretical tokens = (weight * paymentAmount) / 1e18 = (10000e18 * 1e18) / 1e18 = 10000e18
+        uint256 theoreticalTokens = (weight * paymentAmount) / 1e18;
+        
+        // Expected tokens after reserved percent = theoreticalTokens * (10000 - 6200) / 10000
+        uint256 expectedAfterReserved = (theoreticalTokens * (10000 - reservedPercent)) / 10000;
+
+        assertEq(expectedTokens, expectedAfterReserved, "Quote should account for reserved percent");
+        assertEq(expectedTokens, 3800e18, "User should receive 38% of tokens (3800 tokens)");
     }
 
     /// Given project 123 has a weight of 1000e18

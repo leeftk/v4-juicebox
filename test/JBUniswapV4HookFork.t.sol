@@ -967,6 +967,9 @@ contract JBUniswapV4HookForkTest is Test {
             jbOut = o;
         } catch {}
 
+        // Record initial balance before swap
+        uint256 initialNANA = IERC20(NANA).balanceOf(user);
+        
         // Execute via JB router to let hook choose
         vm.recordLogs();
         SwapParams memory testSwap = SwapParams({
@@ -992,6 +995,17 @@ contract JBUniswapV4HookForkTest is Test {
 
             if (jbOut > v4Out && jbOut > 0 && address(jbTerminal) != address(0)) {
                 assertEq(keccak256(bytes(route)), keccak256("juicebox"), "Expected route to be juicebox");
+                
+                // Verify quote accuracy: check actual tokens received match quote
+                uint256 finalNANA = IERC20(NANA).balanceOf(user);
+                uint256 nanaReceived = finalNANA > initialNANA ? finalNANA - initialNANA : 0;
+                
+                if (nanaReceived > 0 && jbOut > 0) {
+                    uint256 diff = nanaReceived > jbOut ? nanaReceived - jbOut : jbOut - nanaReceived;
+                    uint256 tolerance = jbOut / 100; // 1% tolerance
+                    assertLe(diff, tolerance, "Quote should match actual received tokens (within 1% tolerance)");
+                    assertGe(nanaReceived, jbOut * 90 / 100, "Should receive at least 90% of quoted tokens");
+                }
             } else if (v4Out > 0) {
                 assertEq(keccak256(bytes(route)), keccak256("v4"), "Expected route to be v4");
             }
@@ -1070,6 +1084,10 @@ contract JBUniswapV4HookForkTest is Test {
             jbOut = o;
         } catch {}
 
+        // Record initial balances before swap
+        uint256 initialWETH = IERC20(WETH).balanceOf(user);
+        uint256 initialNANA = IERC20(NANA).balanceOf(user);
+        
         vm.recordLogs();
         SwapParams memory testSwap = SwapParams({
             zeroForOne: true, amountSpecified: -int256(amountIn), sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1
@@ -1091,6 +1109,17 @@ contract JBUniswapV4HookForkTest is Test {
 
             if (jbOut > v4Out && jbOut > 0 && address(jbTerminal) != address(0)) {
                 assertEq(keccak256(bytes(route)), keccak256("juicebox"), "Expected route to be juicebox");
+                
+                // Verify quote accuracy: check actual WETH received matches quote
+                uint256 finalWETH = IERC20(WETH).balanceOf(user);
+                uint256 wethReceived = finalWETH > initialWETH ? finalWETH - initialWETH : 0;
+                
+                if (wethReceived > 0 && jbOut > 0) {
+                    uint256 diff = wethReceived > jbOut ? wethReceived - jbOut : jbOut - wethReceived;
+                    uint256 tolerance = jbOut / 100; // 1% tolerance
+                    assertLe(diff, tolerance, "Quote should match actual received tokens (within 1% tolerance)");
+                    assertGe(wethReceived, jbOut * 90 / 100, "Should receive at least 90% of quoted tokens");
+                }
             } else if (v4Out > 0) {
                 assertEq(keccak256(bytes(route)), keccak256("v4"), "Expected route to be v4");
             }
@@ -1114,7 +1143,7 @@ contract JBUniswapV4HookForkTest is Test {
         vm.assume(projectId != 0);
 
         address user = testUser;
-        vm.deal(user, 20 ether);
+        vm.deal(user, 250 ether); // Need enough for liquidity (200 ether) + swap (1 ether) + buffer
         vm.startPrank(user);
 
         // Create a pool with native ETH (address(0)) instead of WETH
@@ -1215,8 +1244,17 @@ contract JBUniswapV4HookForkTest is Test {
             assertTrue(nanaReceived > 0, "User should have received NANA from pay()");
             assertEq(ethSpent, buyAmount, "User should have spent the exact buy amount");
 
-            // Verify the amount received is reasonable (should match or be close to JB quote)
-            assertGe(nanaReceived, jbOut * 95 / 100, "Should receive at least 95% of expected JB tokens");
+            // Verify quote accuracy: actual received should match quote (accounting for reserved percent)
+            // The quote now accounts for reserved percent, so it should be very close to actual
+            // Allow small tolerance for rounding (within 1%)
+            if (jbOut > 0) {
+                uint256 diff = nanaReceived > jbOut ? nanaReceived - jbOut : jbOut - nanaReceived;
+                uint256 tolerance = jbOut / 100; // 1% tolerance
+                assertLe(diff, tolerance, "Quote should match actual received tokens (within 1% tolerance)");
+                
+                // Also verify it's not way off (should be at least 90% of quote)
+                assertGe(nanaReceived, jbOut * 90 / 100, "Should receive at least 90% of quoted tokens");
+            }
         } catch Error(string memory reason) {
             console.log("testFork_BuyingJBTokenViaPay swap failed:", reason);
         } catch {
@@ -1365,10 +1403,16 @@ contract JBUniswapV4HookForkTest is Test {
             assertTrue(wethReceived > 0, "User should have received WETH from cashOutTokensOf");
             assertEq(nanaSpent, sellAmount, "User should have spent the exact sell amount");
 
-            // Verify the amount received is reasonable (should match or be close to JB quote)
-            assertGe(
-                wethReceived, jbOut * 95 / 100, "Should receive at least 95% of expected WETH from cashOutTokensOf"
-            );
+            // Verify quote accuracy: actual received should match quote (accounting for fees/slippage)
+            // The quote should be very close to actual (within 1% tolerance)
+            if (jbOut > 0) {
+                uint256 diff = wethReceived > jbOut ? wethReceived - jbOut : jbOut - wethReceived;
+                uint256 tolerance = jbOut / 100; // 1% tolerance
+                assertLe(diff, tolerance, "Quote should match actual received tokens (within 1% tolerance)");
+                
+                // Also verify it's not way off (should be at least 90% of quote)
+                assertGe(wethReceived, jbOut * 90 / 100, "Should receive at least 90% of quoted tokens");
+            }
         } catch Error(string memory reason) {
             console.log("testFork_SellingJBTokenViaCashOutTokensOf swap failed:", reason);
         } catch {
