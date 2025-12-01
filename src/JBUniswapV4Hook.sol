@@ -76,6 +76,24 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
     /// @dev Only exact-input swaps are supported
     error JBUniswapV4Hook_ExactOutputSwapsNotSupported();
 
+    /// @notice Reverts when secondsAgo is zero in _consult()
+    error JBUniswapV4Hook_SecondsAgoCannotBeZero();
+
+    /// @notice Reverts when observation cardinality is zero
+    error JBUniswapV4Hook_ObservationCardinalityZero();
+
+    /// @notice Reverts when v3 pool is not found
+    error JBUniswapV4Hook_V3PoolNotFound();
+
+    /// @notice Reverts when v3 pool is locked
+    error JBUniswapV4Hook_V3PoolLocked();
+
+    /// @notice Reverts when swap callback has no valid swap (both deltas <= 0)
+    error JBUniswapV4Hook_NoSwap();
+
+    /// @notice Reverts when swap callback is called from invalid sender
+    error JBUniswapV4Hook_InvalidCallback();
+
     //*********************************************************************//
     // ---------------------------- structs ------------------------------ //
     //*********************************************************************//
@@ -617,7 +635,7 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
         view
         returns (int24 arithmeticMeanTick, uint128 harmonicMeanLiquidity)
     {
-        require(secondsAgo != 0);
+        if (secondsAgo == 0) revert JBUniswapV4Hook_SecondsAgoCannotBeZero();
 
         uint32[] memory secondsAgos = new uint32[](2);
         secondsAgos[0] = secondsAgo;
@@ -644,7 +662,7 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
     /// @return secondsAgo The number of seconds ago of the oldest observation stored for the pool
     function _getOldestObservationSecondsAgo(IUniswapV3Pool pool) external view returns (uint32 secondsAgo) {
         (,, uint16 observationIndex, uint16 observationCardinality,,,) = pool.slot0();
-        require(observationCardinality > 0);
+        if (observationCardinality == 0) revert JBUniswapV4Hook_ObservationCardinalityZero();
 
         (uint32 observationTimestamp,,, bool initialized) =
             pool.observations((observationIndex + 1) % observationCardinality);
@@ -1162,11 +1180,11 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
     ) internal returns (uint256 outputReceived) {
         // Get the v3 pool (10000 fee tier)
         address v3Pool = V3_FACTORY.getPool(token0, token1, 10000);
-        require(v3Pool != address(0), "V3 pool not found");
+        if (v3Pool == address(0)) revert JBUniswapV4Hook_V3PoolNotFound();
 
         // Check pool is unlocked
         (,,,,,, bool unlocked) = IUniswapV3Pool(v3Pool).slot0();
-        require(unlocked, "V3 pool locked");
+        if (!unlocked) revert JBUniswapV4Hook_V3PoolLocked();
 
         // Determine input/output tokens based on swap direction
         address v3TokenIn = zeroForOne ? token0 : token1;
@@ -1225,7 +1243,7 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
     /// @param amount1Delta The amount of token1 that must be paid (positive) or received (negative)
     /// @param data Additional data containing pool info for validation
     function uniswapV3SwapCallback(int256 amount0Delta, int256 amount1Delta, bytes calldata data) external override {
-        require(amount0Delta > 0 || amount1Delta > 0, "No swap");
+        if (amount0Delta <= 0 && amount1Delta <= 0) revert JBUniswapV4Hook_NoSwap();
 
         // Decode pool info from data
         (address token0, address token1, uint24 fee) = abi.decode(data, (address, address, uint24));
@@ -1233,7 +1251,7 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
         // Validate callback - ensure msg.sender is a valid v3 pool from the factory
         // Check via factory's getPool method (works for both real and mock factories)
         address expectedPool = V3_FACTORY.getPool(token0, token1, fee);
-        require(msg.sender == expectedPool && expectedPool != address(0), "Invalid callback");
+        if (msg.sender != expectedPool || expectedPool == address(0)) revert JBUniswapV4Hook_InvalidCallback();
 
         // Determine which token to pay (one delta will be positive)
         uint256 amountToPay;
