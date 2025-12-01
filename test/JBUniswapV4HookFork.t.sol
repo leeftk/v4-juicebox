@@ -1560,16 +1560,16 @@ contract JBUniswapV4HookForkTest is Test {
         bytes memory data = abi.encode(WETH, NANA, uint24(10000));
 
         // Test with both deltas <= 0 - should revert
-        vm.expectRevert("No swap");
+        vm.expectRevert(JBUniswapV4Hook.JBUniswapV4Hook_NoSwap.selector);
         hook.uniswapV3SwapCallback(0, 0, data);
 
-        vm.expectRevert("No swap");
+        vm.expectRevert(JBUniswapV4Hook.JBUniswapV4Hook_NoSwap.selector);
         hook.uniswapV3SwapCallback(-1, -1, data);
 
-        vm.expectRevert("No swap");
+        vm.expectRevert(JBUniswapV4Hook.JBUniswapV4Hook_NoSwap.selector);
         hook.uniswapV3SwapCallback(0, -1, data);
 
-        vm.expectRevert("No swap");
+        vm.expectRevert(JBUniswapV4Hook.JBUniswapV4Hook_NoSwap.selector);
         hook.uniswapV3SwapCallback(-1, 0, data);
     }
 
@@ -1584,7 +1584,7 @@ contract JBUniswapV4HookForkTest is Test {
 
         // Call callback from malicious sender (not a valid v3 pool)
         vm.prank(maliciousSender);
-        vm.expectRevert("Invalid callback");
+        vm.expectRevert(JBUniswapV4Hook.JBUniswapV4Hook_InvalidCallback.selector);
         hook.uniswapV3SwapCallback(1 ether, 0, data);
     }
 
@@ -1604,7 +1604,7 @@ contract JBUniswapV4HookForkTest is Test {
         bytes memory data = abi.encode(nonExistentToken0, nonExistentToken1, uint24(10000));
 
         // Callback should revert because pool doesn't exist (expectedPool == address(0))
-        vm.expectRevert("Invalid callback");
+        vm.expectRevert(JBUniswapV4Hook.JBUniswapV4Hook_InvalidCallback.selector);
         hook.uniswapV3SwapCallback(1 ether, 0, data);
     }
 
@@ -1618,7 +1618,7 @@ contract JBUniswapV4HookForkTest is Test {
         }
 
         // _consult() is an external view function, so we can call it directly
-        vm.expectRevert();
+        vm.expectRevert(JBUniswapV4Hook.JBUniswapV4Hook_SecondsAgoCannotBeZero.selector);
         hook._consult(IUniswapV3Pool(v3Pool), 0);
     }
 

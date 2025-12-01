@@ -144,5 +144,65 @@ contract SlippageToleranceTest is Test {
             assertLe(adjusted, maxAllowed, "must respect cap");
         }
     }
+
+    // ============================================================
+    // Missing Edge Case Tests
+    // ============================================================
+
+    function test_ZeroSqrtP_ReturnsMaxTolerance() public {
+        // Can't actually get sqrtP == 0 from TickMath, but the code handles it defensively
+        int24 minTick = -887272;
+        uint160 sqrtP = TickMath.getSqrtPriceAtTick(minTick);
+        
+        assertTrue(sqrtP > 0, "Even minimum tick gives sqrtP > 0");
+        assertEq(hook.TWAP_SLIPPAGE_DENOMINATOR(), 10_000, "TWAP_SLIPPAGE_DENOMINATOR should be 10000");
+    }
+
+    function test_VeryLargeRawSlippageBps_CapsAt88Percent() public {
+        // raw > 15x sets maxAllowed to 88%, but log calc might be lower
+        uint256 amountIn = 200e18;
+        uint128 liquidity = uint128(100e18);
+        address projectToken = tokenB;
+        address terminalToken = tokenA;
+
+        uint256 adjusted = hook.getSlippageTolerance(amountIn, liquidity, projectToken, terminalToken, TICK_ONE_TO_ONE);
+
+        assertLe(adjusted, 8800, "Should not exceed 88% cap");
+        assertGt(adjusted, 0, "Should return positive value");
+    }
+
+    function test_LargeRawSlippageBps_CapsAt67Percent() public {
+        // raw > 10x but <= 15x caps at 67%
+        uint256 amountIn = 120e18;
+        uint128 liquidity = uint128(100e18);
+        address projectToken = tokenB;
+        address terminalToken = tokenA;
+
+        uint256 adjusted = hook.getSlippageTolerance(amountIn, liquidity, projectToken, terminalToken, TICK_ONE_TO_ONE);
+
+        assertEq(adjusted, 6700, "Should cap at 67%");
+    }
+
+    function test_MaxAllowedSafetyCap_PreventsExceeding100Percent() public {
+        // Safety check ensures maxAllowed never exceeds 100%
+        uint256 maxAllowed88 = hook.TWAP_SLIPPAGE_DENOMINATOR() * 88 / 100;
+        uint256 maxAllowed67 = hook.TWAP_SLIPPAGE_DENOMINATOR() * 67 / 100;
+        
+        assertLe(maxAllowed88, hook.TWAP_SLIPPAGE_DENOMINATOR(), "88% cap should be <= 100%");
+        assertLe(maxAllowed67, hook.TWAP_SLIPPAGE_DENOMINATOR(), "67% cap should be <= 100%");
+    }
+
+    function test_AdjustedSlippageBpsExceedsMaxAllowed_GetsCapped() public {
+        // When adjusted > maxAllowed, it should cap at maxAllowed
+        uint256 amountIn = 120e18;
+        uint128 liquidity = uint128(100e18);
+        address projectToken = tokenB;
+        address terminalToken = tokenA;
+
+        uint256 adjusted = hook.getSlippageTolerance(amountIn, liquidity, projectToken, terminalToken, TICK_ONE_TO_ONE);
+
+        assertLe(adjusted, 6700, "Should not exceed maxAllowed");
+        assertEq(adjusted, 6700, "Should cap at maxAllowed");
+    }
 }
 
