@@ -5,6 +5,9 @@
   "lib/hookmate": {
     "rev": "33408fbc15e083eb0bc4205fa37cb6ba0a926f44"
   },
+  "lib/nana-core-v5": {
+    "rev": "49d5960c2919f052fd8b524998972e39207353f6"
+  },
   "lib/uniswap-hooks": {
     "rev": "e59fe72c110c3862eec9b332530dce49ca506bbb"
   }

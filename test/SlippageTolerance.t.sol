@@ -35,8 +35,8 @@ contract SlippageCalcHarness {
         uint256 maxAllowed = rawSlippageBps > 15 * TWAP_SLIPPAGE_DENOMINATOR
             ? TWAP_SLIPPAGE_DENOMINATOR * 88 / 100
             : (rawSlippageBps > 10 * TWAP_SLIPPAGE_DENOMINATOR
-                ? TWAP_SLIPPAGE_DENOMINATOR * 67 / 100
-                : rawSlippageBps / 5);
+                    ? TWAP_SLIPPAGE_DENOMINATOR * 67 / 100
+                    : rawSlippageBps / 5);
 
         uint256 scaledValue = rawSlippageBps * 1e18;
         if (scaledValue < 1e18) scaledValue = 1e18;
@@ -77,9 +77,7 @@ contract SlippageToleranceTest is Test {
         address projectToken = tokenB; // 0xB
         address terminalToken = tokenA; // 0xA
 
-        uint256 adjusted = hook.getSlippageTolerance(
-            amountIn, liquidity, projectToken, terminalToken, TICK_ONE_TO_ONE
-        );
+        uint256 adjusted = hook.getSlippageTolerance(amountIn, liquidity, projectToken, terminalToken, TICK_ONE_TO_ONE);
 
         // Expect ~ raw/5 = 100 bps (1%) since raw = 500
         assertEq(adjusted, 100, "adjusted should cap at 1% for 1/200");
@@ -92,9 +90,7 @@ contract SlippageToleranceTest is Test {
         address projectToken = tokenB;
         address terminalToken = tokenA;
 
-        uint256 adjusted = hook.getSlippageTolerance(
-            amountIn, liquidity, projectToken, terminalToken, TICK_ONE_TO_ONE
-        );
+        uint256 adjusted = hook.getSlippageTolerance(amountIn, liquidity, projectToken, terminalToken, TICK_ONE_TO_ONE);
 
         // Tiny-raw floor: base(1050) + raw/5 (=4) = 1054 bps
         assertEq(adjusted, 1054, "tiny raw should floor to ~1054 bps");
@@ -107,9 +103,7 @@ contract SlippageToleranceTest is Test {
         address projectToken = tokenB;
         address terminalToken = tokenA;
 
-        uint256 adjusted = hook.getSlippageTolerance(
-            amountIn, liquidity, projectToken, terminalToken, TICK_ONE_TO_ONE
-        );
+        uint256 adjusted = hook.getSlippageTolerance(amountIn, liquidity, projectToken, terminalToken, TICK_ONE_TO_ONE);
 
         assertEq(adjusted, 2000, "should cap at 20% of raw (2000 bps)");
     }
@@ -121,16 +115,15 @@ contract SlippageToleranceTest is Test {
         address projectToken = tokenB;
         address terminalToken = tokenA;
 
-        uint256 adjusted = hook.getSlippageTolerance(
-            amountIn, liquidity, projectToken, terminalToken, TICK_ONE_TO_ONE
-        );
+        uint256 adjusted = hook.getSlippageTolerance(amountIn, liquidity, projectToken, terminalToken, TICK_ONE_TO_ONE);
 
         // Recompute raw for bounds
         (address token0,) = projectToken < terminalToken ? (projectToken, terminalToken) : (terminalToken, projectToken);
         bool zeroForOne = terminalToken == token0;
         uint256 base = FullMath.mulDiv(uint256(amountIn), 10 * hook.TWAP_SLIPPAGE_DENOMINATOR(), uint256(liquidity));
         uint256 sqrtP = uint256(TickMath.getSqrtPriceAtTick(TICK_ONE_TO_ONE));
-        uint256 raw = zeroForOne ? FullMath.mulDiv(base, sqrtP, uint256(1) << 96) : FullMath.mulDiv(base, uint256(1) << 96, sqrtP);
+        uint256 raw =
+            zeroForOne ? FullMath.mulDiv(base, sqrtP, uint256(1) << 96) : FullMath.mulDiv(base, uint256(1) << 96, sqrtP);
 
         if (raw == 0) {
             // When raw is zero, implementation returns the UNCERTAIN floor directly
@@ -140,9 +133,7 @@ contract SlippageToleranceTest is Test {
 
         uint256 maxAllowed = raw > 15 * hook.TWAP_SLIPPAGE_DENOMINATOR()
             ? hook.TWAP_SLIPPAGE_DENOMINATOR() * 88 / 100
-            : (raw > 10 * hook.TWAP_SLIPPAGE_DENOMINATOR()
-                ? hook.TWAP_SLIPPAGE_DENOMINATOR() * 67 / 100
-                : raw / 5);
+            : (raw > 10 * hook.TWAP_SLIPPAGE_DENOMINATOR() ? hook.TWAP_SLIPPAGE_DENOMINATOR() * 67 / 100 : raw / 5);
 
         if (raw < 500) {
             uint256 minFloor = hook.UNCERTAIN_TWAP_SLIPPAGE_TOLERANCE() + (raw / 5);
@@ -154,5 +145,4 @@ contract SlippageToleranceTest is Test {
         }
     }
 }
-
 

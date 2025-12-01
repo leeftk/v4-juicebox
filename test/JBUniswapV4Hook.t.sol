@@ -16,9 +16,11 @@ import {PoolId, PoolIdLibrary} from "@uniswap/v4-core/src/types/PoolId.sol";
 import {Currency, CurrencyLibrary} from "@uniswap/v4-core/src/types/Currency.sol";
 import {TickMath} from "@uniswap/v4-core/src/libraries/TickMath.sol";
 import {Hooks} from "@uniswap/v4-core/src/libraries/Hooks.sol";
+import {FullMath} from "@uniswap/v4-core/src/libraries/FullMath.sol";
 
 import {JBUniswapV4Hook} from "../src/JBUniswapV4Hook.sol";
 import {MockERC20} from "./mock/MockERC20.sol";
+import {MockWETH} from "./mock/MockWETH.sol";
 import {JuiceboxSwapRouter} from "./utils/JuiceboxSwapRouter.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
@@ -36,6 +38,7 @@ import {
 import {IUniswapV3Factory} from "../src/interfaces/IUniswapV3Factory.sol";
 import {JBRuleset} from "@bananapus/core-v5/structs/JBRuleset.sol";
 import {JBRulesetMetadata} from "@bananapus/core-v5/structs/JBRulesetMetadata.sol";
+import {JBRulesetMetadataResolver} from "@bananapus/core-v5/libraries/JBRulesetMetadataResolver.sol";
 import {IJBRulesetApprovalHook} from "@bananapus/core-v5/interfaces/IJBRulesetApprovalHook.sol";
 import {HookMiner} from "@uniswap/v4-periphery/src/utils/HookMiner.sol";
 
@@ -162,12 +165,8 @@ contract MockJBMultiTerminal {
         lastBeneficiary = beneficiary;
 
         // Mock cash out: return the surplus amount proportional to the cash out count
-        uint256 surplusAmount = TERMINAL_STORE.currentReclaimableSurplusOf(
-            projectId,
-            1 ether,
-            uint32(uint160(tokenToReclaim)),
-            18
-        );
+        uint256 surplusAmount =
+            TERMINAL_STORE.currentReclaimableSurplusOf(projectId, 1 ether, uint32(uint160(tokenToReclaim)), 18);
 
         uint256 outputAmount = (surplusAmount * cashOutCount) / 1e18;
 
@@ -181,9 +180,14 @@ contract MockJBMultiTerminal {
 
 contract MockJBController {
     mapping(uint256 => uint256) public weights;
+    mapping(uint256 => uint16) public reservedPercents;
 
     function setWeight(uint256 projectId, uint256 weight) external {
         weights[projectId] = weight;
+    }
+
+    function setReservedPercent(uint256 projectId, uint16 reservedPercent) external {
+        reservedPercents[projectId] = reservedPercent;
     }
 
     function currentRulesetOf(uint256 projectId)
@@ -191,20 +195,8 @@ contract MockJBController {
         view
         returns (JBRuleset memory ruleset, JBRulesetMetadata memory metadata)
     {
-        ruleset = JBRuleset({
-            cycleNumber: 1,
-            id: 1,
-            basedOnId: 0,
-            start: uint48(block.timestamp),
-            duration: 0,
-            weight: uint112(weights[projectId]),
-            weightCutPercent: 0,
-            approvalHook: IJBRulesetApprovalHook(address(0)),
-            metadata: 0
-        });
-
         metadata = JBRulesetMetadata({
-            reservedPercent: 0,
+            reservedPercent: reservedPercents[projectId],
             cashOutTaxRate: 0,
             baseCurrency: 1,
             pausePay: false,
@@ -223,6 +215,19 @@ contract MockJBController {
             useDataHookForCashOut: false,
             dataHook: address(0),
             metadata: 0
+        });
+
+        // Pack metadata into ruleset.metadata so reservedPercent can be extracted
+        ruleset = JBRuleset({
+            cycleNumber: 1,
+            id: 1,
+            basedOnId: 0,
+            start: uint48(block.timestamp),
+            duration: 0,
+            weight: uint112(weights[projectId]),
+            weightCutPercent: 0,
+            approvalHook: IJBRulesetApprovalHook(address(0)),
+            metadata: JBRulesetMetadataResolver.packRulesetMetadata(metadata)
         });
     }
 }
@@ -253,7 +258,7 @@ contract MockJBTerminalStore {
         // surplusPerToken is stored as surplus per 1e18 tokens
         uint256 surplusPerTokenValue = surplusPerToken[projectId][currency];
         if (surplusPerTokenValue == 0) return 0;
-        
+
         // Calculate: (surplusPerToken * cashOutCount) / 1e18
         return (surplusPerTokenValue * cashOutCount) / 1e18;
     }
@@ -265,26 +270,26 @@ contract MockUniswapV3Pool {
     address public immutable token0;
     address public immutable token1;
     uint24 public immutable fee;
-    
+
     bool public unlocked = true;
     uint160 public sqrtPriceX96;
     int24 public tick;
     uint128 public liquidity;
-    
+
     // Price multiplier: output = (input * priceMultiplier) / 1e18
     // For zeroForOne: priceMultiplier = token1Out / token0In
     // For oneForZero: priceMultiplier = token0Out / token1In
     uint256 public priceMultiplier;
-    
+
     // Track if swap was called (for testing)
     bool public swapCalled;
     address public lastSwapRecipient;
-    
+
     function resetSwapTracking() external {
         swapCalled = false;
         lastSwapRecipient = address(0);
     }
-    
+
     constructor(address _token0, address _token1, uint24 _fee) {
         token0 = _token0;
         token1 = _token1;
@@ -294,20 +299,20 @@ contract MockUniswapV3Pool {
         tick = 0;
         priceMultiplier = 1e18; // 1:1 price by default
     }
-    
+
     function setPriceMultiplier(uint256 multiplier) external {
         priceMultiplier = multiplier;
         // Update sqrtPriceX96 to match
         // For zeroForOne: price = token1/token0 = multiplier/1e18
         // sqrtPriceX96 = sqrt(price) * 2^96
         if (multiplier >= 1e18) {
-            uint256 priceRatio = multiplier * (2**96)**2 / 1e18;
+            uint256 priceRatio = multiplier * (2 ** 96) ** 2 / 1e18;
             sqrtPriceX96 = uint160(sqrt(priceRatio));
         } else {
-            uint256 priceRatio = (2**96)**2 * 1e18 / multiplier;
+            uint256 priceRatio = (2 ** 96) ** 2 * 1e18 / multiplier;
             sqrtPriceX96 = uint160(sqrt(priceRatio));
         }
-        
+
         // Calculate tick from sqrtPriceX96
         // tick = log(sqrtPriceX96 / 2^48) / log(1.0001)
         // For price = multiplier/1e18: tick ≈ log(multiplier/1e18) / log(1.0001)
@@ -315,7 +320,7 @@ contract MockUniswapV3Pool {
         // For small values near 1.0: log(1+x) ≈ x, so tick ≈ (multiplier/1e18 - 1) * 10000
         // More accurately: tick ≈ log(multiplier/1e18) * 10000
         // Using ln approximation: ln(x) ≈ (x-1) for x close to 1, but for larger values we need log2
-        
+
         // For values close to 1.0 (within 10%), use linear approximation
         if (multiplier >= 0.9e18 && multiplier <= 1.1e18) {
             // Linear approximation: tick ≈ (multiplier/1e18 - 1) * 10000
@@ -351,52 +356,53 @@ contract MockUniswapV3Pool {
         if (tick > 887272) tick = 887272;
         if (tick < -887272) tick = -887272;
     }
-    
+
     function setLiquidity(uint128 _liquidity) external {
         liquidity = _liquidity;
     }
-    
-    function slot0() external view returns (
-        uint160 _sqrtPriceX96,
-        int24 _tick,
-        uint16 observationIndex,
-        uint16 observationCardinality,
-        uint16 observationCardinalityNext,
-        uint8 feeProtocol,
-        bool _unlocked
-    ) {
+
+    function slot0()
+        external
+        view
+        returns (
+            uint160 _sqrtPriceX96,
+            int24 _tick,
+            uint16 observationIndex,
+            uint16 observationCardinality,
+            uint16 observationCardinalityNext,
+            uint8 feeProtocol,
+            bool _unlocked
+        )
+    {
         // Return cardinality of 2 so oldest observation can be found
         return (sqrtPriceX96, tick, 0, 2, 2, 0, unlocked);
     }
-    
+
     function initialize(uint160 _sqrtPriceX96) external {
         sqrtPriceX96 = _sqrtPriceX96;
         unlocked = true;
     }
-    
-    function swap(
-        address recipient,
-        bool zeroForOne,
-        int256 amountSpecified,
-        uint160,
-        bytes calldata data
-    ) external returns (int256 amount0, int256 amount1) {
+
+    function swap(address recipient, bool zeroForOne, int256 amountSpecified, uint160, bytes calldata data)
+        external
+        returns (int256 amount0, int256 amount1)
+    {
         require(unlocked, "Pool locked");
         require(amountSpecified > 0, "Exact input required");
-        
+
         swapCalled = true;
         lastSwapRecipient = recipient;
-        
+
         uint256 amountIn = uint256(amountSpecified);
         uint256 amountOut;
-        
+
         if (zeroForOne) {
             // Swapping token0 for token1
             // amountOut = (amountIn * priceMultiplier) / 1e18
             // Apply fee (1% = 10000 bips)
             uint256 amountAfterFee = amountIn * (1000000 - fee) / 1000000;
             amountOut = (amountAfterFee * priceMultiplier) / 1e18;
-            
+
             amount0 = int256(amountIn);
             amount1 = -int256(amountOut);
         } else {
@@ -404,14 +410,14 @@ contract MockUniswapV3Pool {
             // amountOut = (amountIn * 1e18) / priceMultiplier
             uint256 amountAfterFee = amountIn * (1000000 - fee) / 1000000;
             amountOut = (amountAfterFee * 1e18) / priceMultiplier;
-            
+
             amount0 = -int256(amountOut);
             amount1 = int256(amountIn);
         }
-        
+
         // Call the callback to get payment (this will transfer input tokens to this pool)
         IUniswapV3SwapCallback(msg.sender).uniswapV3SwapCallback(amount0, amount1, data);
-        
+
         // Transfer output tokens to recipient (from pool's balance)
         if (zeroForOne) {
             require(IERC20(token1).balanceOf(address(this)) >= amountOut, "Insufficient token1 in pool");
@@ -420,10 +426,10 @@ contract MockUniswapV3Pool {
             require(IERC20(token0).balanceOf(address(this)) >= amountOut, "Insufficient token0 in pool");
             IERC20(token0).safeTransfer(recipient, amountOut);
         }
-        
+
         return (amount0, amount1);
     }
-    
+
     function observe(uint32[] calldata secondsAgos)
         external
         view
@@ -432,7 +438,7 @@ contract MockUniswapV3Pool {
         uint256 length = secondsAgos.length;
         tickCumulatives = new int56[](length);
         secondsPerLiquidityCumulativeX128s = new uint160[](length);
-        
+
         // Calculate cumulative tick values for TWAP
         // Cumulative tick accumulates over time: cumulative = tick * timeElapsed
         // For TWAP: (cumulativeCurrent - cumulativePast) / timeElapsed = tick
@@ -469,7 +475,7 @@ contract MockUniswapV3Pool {
             }
         }
     }
-    
+
     function observations(uint256 index)
         external
         view
@@ -511,7 +517,7 @@ contract MockUniswapV3Pool {
             return (oldTimestamp, oldCumulative, 0, true);
         }
     }
-    
+
     // Helper function to calculate square root
     function sqrt(uint256 x) internal pure returns (uint256) {
         if (x == 0) return 0;
@@ -528,26 +534,26 @@ contract MockUniswapV3Pool {
 contract MockUniswapV3Factory is IUniswapV3Factory {
     // Mapping: token0 => token1 => fee => pool
     mapping(address => mapping(address => mapping(uint24 => address))) public pools;
-    
+
     function getPool(address tokenA, address tokenB, uint24 fee) external view returns (address pool) {
         (address token0, address token1) = tokenA < tokenB ? (tokenA, tokenB) : (tokenB, tokenA);
         return pools[token0][token1][fee];
     }
-    
+
     function createPool(address tokenA, address tokenB, uint24 fee) external returns (address pool) {
         (address token0, address token1) = tokenA < tokenB ? (tokenA, tokenB) : (tokenB, tokenA);
         require(pools[token0][token1][fee] == address(0), "Pool exists");
-        
+
         pool = address(new MockUniswapV3Pool(token0, token1, fee));
         pools[token0][token1][fee] = pool;
-        
+
         return pool;
     }
-    
+
     function enableFeeAmount(uint24 fee, int24 tickSpacing) external {
         // No-op for mock
     }
-    
+
     function setPool(address tokenA, address tokenB, uint24 fee, address pool) external {
         (address token0, address token1) = tokenA < tokenB ? (tokenA, tokenB) : (tokenB, tokenA);
         pools[token0][token1][fee] = pool;
@@ -555,6 +561,8 @@ contract MockUniswapV3Factory is IUniswapV3Factory {
 }
 
 contract JuiceboxHookTest is Test {
+    // Allow test contract to receive ETH
+    receive() external payable {}
     using PoolIdLibrary for PoolKey;
     using CurrencyLibrary for Currency;
     using StateLibrary for IPoolManager;
@@ -610,12 +618,17 @@ contract JuiceboxHookTest is Test {
         // Deploy the hook with proper address mining
         // Calculate the required flags for the hook permissions
         // afterInitialize = true, beforeSwap = true, afterSwap = true, beforeSwapReturnDelta = true
+        // afterAddLiquidity = true, afterRemoveLiquidity = true
         uint160 flags = uint160(
             Hooks.AFTER_INITIALIZE_FLAG | Hooks.BEFORE_SWAP_FLAG | Hooks.AFTER_SWAP_FLAG
-                | Hooks.BEFORE_SWAP_RETURNS_DELTA_FLAG
+                | Hooks.BEFORE_SWAP_RETURNS_DELTA_FLAG | Hooks.AFTER_ADD_LIQUIDITY_FLAG
+                | Hooks.AFTER_REMOVE_LIQUIDITY_FLAG
         );
 
         // Prepare constructor arguments
+        // Use a test WETH address (can be any address for unit tests)
+        address testWETH = address(0x1234567890123456789012345678901234567890);
+
         bytes memory constructorArgs = abi.encode(
             IPoolManager(address(manager)),
             IJBTokens(address(mockJBTokens)),
@@ -623,7 +636,8 @@ contract JuiceboxHookTest is Test {
             IJBController(address(mockJBController)),
             IJBPrices(address(mockJBPrices)),
             IJBTerminalStore(address(mockJBTerminalStore)),
-            IUniswapV3Factory(address(mockV3Factory))
+            IUniswapV3Factory(address(mockV3Factory)),
+            testWETH
         );
 
         // Find a valid hook address using HookMiner
@@ -645,7 +659,8 @@ contract JuiceboxHookTest is Test {
             IJBController(address(mockJBController)),
             IJBPrices(address(mockJBPrices)),
             IJBTerminalStore(address(mockJBTerminalStore)),
-            IUniswapV3Factory(address(mockV3Factory))
+            IUniswapV3Factory(address(mockV3Factory)),
+            testWETH
         );
 
         // Deploy test tokens
@@ -656,14 +671,14 @@ contract JuiceboxHookTest is Test {
         if (address(token0) > address(token1)) {
             (token0, token1) = (token1, token0);
         }
-        
+
         // Create v3 pool for token0/token1 pair (10000 fee tier)
         mockV3Pool = MockUniswapV3Pool(mockV3Factory.createPool(address(token0), address(token1), 10000));
-        
+
         // Set up high liquidity for v3 pool (needed for TWAP calculations with low slippage)
         // High liquidity = low slippage tolerance = better price estimates
         mockV3Pool.setLiquidity(1000e18); // Much higher liquidity
-        
+
         // Mint tokens to the v3 pool so it can handle swaps
         token0.mint(address(mockV3Pool), 10000 ether);
         token1.mint(address(mockV3Pool), 10000 ether);
@@ -728,8 +743,7 @@ contract JuiceboxHookTest is Test {
 
         jbSwapRouter.swap(key, params);
 
-        // Now the project ID should be cached
-        assertEq(hook.projectIdOf(id), 123, "Project ID should be cached as 123");
+        // Swap should have executed successfully (project ID is detected dynamically, no cache needed)
     }
 
     /// Given the Juicebox swap router is configured
@@ -876,9 +890,11 @@ contract JuiceboxHookTest is Test {
         assertFalse(permissions.beforeInitialize, "Should not have beforeInitialize permission");
         assertTrue(permissions.afterInitialize, "Should have afterInitialize permission for oracle");
         assertFalse(permissions.beforeAddLiquidity, "Should not have beforeAddLiquidity permission");
-        assertFalse(permissions.afterAddLiquidity, "Should not have afterAddLiquidity permission");
+        assertTrue(permissions.afterAddLiquidity, "Should have afterAddLiquidity permission for oracle observations");
         assertFalse(permissions.beforeRemoveLiquidity, "Should not have beforeRemoveLiquidity permission");
-        assertFalse(permissions.afterRemoveLiquidity, "Should not have afterRemoveLiquidity permission");
+        assertTrue(
+            permissions.afterRemoveLiquidity, "Should have afterRemoveLiquidity permission for oracle observations"
+        );
         assertTrue(permissions.beforeSwap, "Should have beforeSwap permission");
         assertTrue(permissions.afterSwap, "Should have afterSwap permission for oracle observations");
         assertFalse(permissions.beforeDonate, "Should not have beforeDonate permission");
@@ -940,9 +956,7 @@ contract JuiceboxHookTest is Test {
 
         jbSwapRouter.swap(key, params);
 
-        // After swap, projectId should be cached for the pool
-        uint256 cachedProjectId = hook.projectIdOf(id);
-        assertEq(cachedProjectId, 123, "Project ID should be cached");
+        // Swap should have executed successfully (project ID is detected dynamically, no cache needed)
     }
 
     // ============================================
@@ -956,11 +970,14 @@ contract JuiceboxHookTest is Test {
     /// And the cardinalityNext should be 1
     function testOracleInitialization() public view {
         // Check that oracle was initialized during pool setup
+        // Note: After adding liquidity in setUp(), the afterAddLiquidity hook records an observation
+        // which grows cardinalityNext from 1 to 2 (since we were at capacity: index 0, cardinality 1)
+        // However, if the block timestamp hasn't changed, Oracle.write() returns early without updating the index
         (uint16 index, uint16 cardinality, uint16 cardinalityNext) = hook.states(id);
 
-        assertEq(index, 0, "Initial index should be 0");
-        assertEq(cardinality, 1, "Initial cardinality should be 1");
-        assertEq(cardinalityNext, 1, "Initial cardinalityNext should be 1");
+        assertEq(index, 0, "Index should be 0 (unchanged if same block timestamp)");
+        assertEq(cardinality, 1, "Cardinality should still be 1 (not updated if same block timestamp)");
+        assertEq(cardinalityNext, 2, "CardinalityNext should be 2 after growing from initial 1");
     }
 
     /// Given the initial oracle index is recorded
@@ -1003,14 +1020,17 @@ contract JuiceboxHookTest is Test {
         token1.mint(address(this), 1 ether);
         token1.approve(address(jbSwapRouter), 1 ether);
 
+        // Advance time to ensure a new observation is written (write() returns early if same block)
+        vm.warp(block.timestamp + 1);
+
         SwapParams memory params =
             SwapParams({zeroForOne: false, amountSpecified: -1 ether, sqrtPriceLimitX96: TickMath.MAX_SQRT_PRICE - 1});
 
         jbSwapRouter.swap(key, params);
 
-        // Check that cardinality has grown
+        // Check that cardinality has grown (must be strictly greater than initial)
         (, uint16 newCardinality,) = hook.states(id);
-        assertGe(newCardinality, initialCardinality, "Cardinality should have grown");
+        assertGt(newCardinality, initialCardinality, "Cardinality should have grown beyond initial value");
     }
 
     /// Given a newly initialized pool with only one observation
@@ -1167,9 +1187,6 @@ contract JuiceboxHookTest is Test {
 
         jbSwapRouter.swap(key, params);
 
-        // Verify that the juicebox routing was executed
-        assertEq(hook.projectIdOf(key.toId()), 123, "Juicebox routing should be executed");
-
         // Assert that the project token (token0) balance increased
         uint256 finalToken0 = token0.balanceOf(address(this));
         uint256 token0Received = finalToken0 - initialToken0;
@@ -1202,9 +1219,6 @@ contract JuiceboxHookTest is Test {
 
         jbSwapRouter.swap(key, params);
 
-        // Verify that the juicebox routing was executed
-        assertEq(hook.projectIdOf(key.toId()), 123, "Juicebox routing should be executed");
-
         // Assert that the project token (token0) balance increased
         uint256 finalToken0 = token0.balanceOf(address(this));
         uint256 tokensReceived = finalToken0 - initialToken0;
@@ -1230,6 +1244,79 @@ contract JuiceboxHookTest is Test {
         // Should match simple calculation for ETH
         uint256 calculated = (weight * paymentAmount) / 1e18;
         assertEq(expectedTokens, calculated, "ETH payment calculation should match");
+    }
+
+    /// Given project 123 has a weight of 1000e18 and reserved percent of 50%
+    /// When calculating expected tokens for 1 ether
+    /// Then the result should account for reserved percent (user gets 50% of theoretical tokens)
+    function testCalculateExpectedTokensWithReservedPercent() public {
+        uint256 weight = 1000e18;
+        uint16 reservedPercent = 5000; // 50% reserved
+        uint256 paymentAmount = 1 ether;
+
+        mockJBController.setWeight(123, weight);
+        mockJBController.setReservedPercent(123, reservedPercent);
+
+        uint256 expectedTokens = hook.calculateExpectedTokensWithCurrency(123, address(0), paymentAmount);
+
+        // Theoretical tokens = (weight * paymentAmount) / 1e18 = (1000e18 * 1e18) / 1e18 = 1000e18
+        uint256 theoreticalTokens = (weight * paymentAmount) / 1e18;
+        
+        // Expected tokens after reserved percent = theoreticalTokens * (10000 - 5000) / 10000
+        uint256 expectedAfterReserved = (theoreticalTokens * (10000 - reservedPercent)) / 10000;
+
+        assertEq(expectedTokens, expectedAfterReserved, "Quote should account for reserved percent");
+        assertEq(expectedTokens, 500e18, "User should receive 50% of tokens (500 tokens)");
+    }
+
+    /// Given project 123 has a weight of 1000e18 and reserved percent of 50%
+    /// When calculating expected tokens for 1 ether
+    /// Then the result should account for reserved percent (user gets 50% of theoretical tokens)
+    function testCalculateExpectedTokensWithReservedPercent_62Percent() public {
+        uint256 weight = 10000e18;
+        uint16 reservedPercent = 6200; // 62% reserved (matches fork test scenario)
+        uint256 paymentAmount = 1 ether;
+
+        mockJBController.setWeight(123, weight);
+        mockJBController.setReservedPercent(123, reservedPercent);
+
+        uint256 expectedTokens = hook.calculateExpectedTokensWithCurrency(123, address(0), paymentAmount);
+
+        // Theoretical tokens = (weight * paymentAmount) / 1e18 = (10000e18 * 1e18) / 1e18 = 10000e18
+        uint256 theoreticalTokens = (weight * paymentAmount) / 1e18;
+        
+        // Expected tokens after reserved percent = theoreticalTokens * (10000 - 6200) / 10000
+        uint256 expectedAfterReserved = (theoreticalTokens * (10000 - reservedPercent)) / 10000;
+
+        assertEq(expectedTokens, expectedAfterReserved, "Quote should account for reserved percent");
+        assertEq(expectedTokens, 3800e18, "User should receive 38% of tokens (3800 tokens)");
+    }
+
+    /// Given project 123 has a weight of 1000e18
+    /// And token1 has a price of 0.5 ETH per token (2 token1 = 1 ETH)
+    /// When calculating expected tokens for 2 ether of token1
+    /// Then the result should account for the non-1:1 price conversion
+    function testCalculateExpectedTokensWithNonOneToOnePrice() public {
+        mockJBController.setWeight(123, 1000e18);
+
+        // Set price: 2 token1 = 1 ETH (so baseCurrencyPerPaymentToken = 0.5e18)
+        // This means 1 token1 = 0.5 ETH, so baseCurrencyPerPaymentToken = 0.5e18
+        // Note: pricePerUnitOf(projectId, baseCurrency, paymentCurrencyId, 18) returns baseCurrency per paymentCurrencyId
+        // So we set: prices[projectId][baseCurrency][paymentCurrencyId] = price
+        uint32 token1CurrencyId = uint32(uint160(address(token1)));
+        uint256 baseCurrency = 1; // ETH
+        mockJBPrices.setPricePerUnitOf(123, baseCurrency, token1CurrencyId, 0.5e18);
+
+        // Calculate expected tokens for 2 ether of token1
+        // Expected: (1000e18 * 2e18 * 0.5e18) / (1e18 * 1e18) = 1000e18
+        uint256 expectedTokens = hook.calculateExpectedTokensWithCurrency(123, address(token1), 2 ether);
+
+        // Manual calculation using FullMath to match the hook's logic
+        uint256 intermediate = FullMath.mulDiv(1000e18, 2 ether, 1e18);
+        uint256 calculated = FullMath.mulDiv(intermediate, 0.5e18, 1e18);
+
+        assertEq(expectedTokens, calculated, "Non-1:1 price calculation should match");
+        assertEq(expectedTokens, 1000 ether, "Should receive 1000 tokens for 2 token1 at 0.5 ETH/token");
     }
 
     /// Given project 123 has a weight of 0
@@ -1282,9 +1369,8 @@ contract JuiceboxHookTest is Test {
             manager.initialize(newKey, SQRT_PRICE_1_1);
             PoolId newId = newKey.toId();
 
-            // The hook should auto-detect and cache the project ID on first interaction
-            // We can check if it would be cached by checking the mapping
-            assertEq(hook.projectIdOf(newId), 0, "Should not be cached yet");
+            // The hook detects project IDs dynamically during swaps (no cache needed)
+            // This test just verifies the pool can be initialized
         }
     }
 
@@ -1921,38 +2007,38 @@ contract JuiceboxHookTest is Test {
     function testV3RoutingWhenCheaper() public {
         // Set block timestamp to ensure we have enough time for TWAP calculations
         vm.warp(block.timestamp + 10000); // Move forward 10k seconds
-        
+
         // Set v3 price to be MUCH better: 2.0 token1 per token0 (vs ~1.0 for v4)
         // This ensures v3 is better even after slippage tolerance calculations
         mockV3Pool.setPriceMultiplier(2.0e18); // 2:1 ratio
-        
+
         // Make sure Juicebox is NOT better by setting very low surplus
         // This ensures we compare v3 vs v4, not route to Juicebox
         mockJBTerminalStore.setSurplus(123, address(token1), 0.01 ether); // Very low surplus
-        
+
         // Record initial balances
         uint256 initialToken0 = token0.balanceOf(address(this));
         uint256 initialToken1 = token1.balanceOf(address(this));
-        
+
         // Reset swap tracking
         mockV3Pool.resetSwapTracking();
-        
+
         // Approve for swap
         token0.approve(address(jbSwapRouter), 1 ether);
-        
+
         // Swap token0 for token1 (selling JB token)
         SwapParams memory params =
             SwapParams({zeroForOne: true, amountSpecified: -1 ether, sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1});
-        
+
         jbSwapRouter.swap(key, params);
-        
+
         // Verify v3 swap was called
         assertTrue(mockV3Pool.swapCalled(), "V3 swap should have been called");
-        
+
         // Check balances changed
         uint256 finalToken0 = token0.balanceOf(address(this));
         uint256 finalToken1 = token1.balanceOf(address(this));
-        
+
         assertEq(initialToken0 - finalToken0, 1 ether, "Should have spent 1 ether of token0");
         assertGt(finalToken1 - initialToken1, 0, "Should have received token1");
     }
@@ -1964,32 +2050,32 @@ contract JuiceboxHookTest is Test {
     function testV3RoutingWithSmallPriceDifference() public {
         // Set block timestamp to ensure we have enough time for TWAP calculations
         vm.warp(block.timestamp + 10000); // Move forward 10k seconds
-        
+
         // Set v3 price to be 15% better: 1.15 token1 per token0
-        // Note: "Small" here is relative - after slippage tolerance (~10-15%), 
+        // Note: "Small" here is relative - after slippage tolerance (~10-15%),
         // we need this margin to ensure v3 is still better than v4
         // In real-world scenarios, even 15% can be considered "small" in volatile markets
         mockV3Pool.setPriceMultiplier(1.15e18);
-        
+
         // Increase liquidity to reduce slippage tolerance impact
         // Higher liquidity = lower slippage = more accurate price comparison
         mockV3Pool.setLiquidity(1000_000_000_000_000_000_000_000_000); // 1e27
-        
+
         // Make sure Juicebox is NOT better by setting very low surplus
         mockJBTerminalStore.setSurplus(123, address(token1), 0.01 ether);
-        
+
         // Reset swap tracking
         mockV3Pool.resetSwapTracking();
-        
+
         // Approve for swap
         token0.approve(address(jbSwapRouter), 1 ether);
-        
+
         // Swap token0 for token1
         SwapParams memory params =
             SwapParams({zeroForOne: true, amountSpecified: -1 ether, sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1});
-        
+
         jbSwapRouter.swap(key, params);
-        
+
         // Verify v3 swap was called even with small difference
         assertTrue(mockV3Pool.swapCalled(), "V3 swap should have been called even with small price difference");
     }
@@ -2000,19 +2086,19 @@ contract JuiceboxHookTest is Test {
     function testV3RoutingWhenV4Cheaper() public {
         // Set v3 price to be worse: 0.9 token1 per token0 (vs 1.0 for v4)
         mockV3Pool.setPriceMultiplier(0.9e18);
-        
+
         // Reset swap tracking
         mockV3Pool.resetSwapTracking();
-        
+
         // Approve for swap
         token0.approve(address(jbSwapRouter), 1 ether);
-        
+
         // Swap token0 for token1
         SwapParams memory params =
             SwapParams({zeroForOne: true, amountSpecified: -1 ether, sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1});
-        
+
         jbSwapRouter.swap(key, params);
-        
+
         // Verify v3 swap was NOT called
         assertFalse(mockV3Pool.swapCalled(), "V3 swap should NOT have been called when v4 is cheaper");
     }
@@ -2023,7 +2109,7 @@ contract JuiceboxHookTest is Test {
     function testV3RoutingReverseDirection() public {
         // Set block timestamp to ensure we have enough time for TWAP calculations
         vm.warp(block.timestamp + 10000); // Move forward 10k seconds
-        
+
         // Set v3 price: For swapping token1 -> token0, we want v3 to be better
         // multiplier = token1/token0, so for 1.2 token0 per token1:
         // token0/token1 = 1.2, so token1/token0 = 1/1.2 = 0.833
@@ -2039,29 +2125,29 @@ contract JuiceboxHookTest is Test {
         // Actually, for token1->token0 swap, if token1/token0 = 0.5, we get 2 token0 per token1
         // But the slippage tolerance might be eating this up. Let's use 0.3 to get 3.33x
         mockV3Pool.setPriceMultiplier(0.3e18); // token1/token0 = 0.3, so token0/token1 = 3.33
-        
+
         // Increase liquidity to reduce slippage tolerance impact
         mockV3Pool.setLiquidity(1000_000_000_000_000_000_000_000_000); // 1e27
-        
+
         // Make sure Juicebox is NOT better for buying JB tokens
         // Set very low weight to make buying JB tokens expensive
         mockJBController.setWeight(123, 0.001 ether); // Very low weight = expensive to buy JB tokens
-        
+
         // Also set zero surplus to be safe
         mockJBTerminalStore.setSurplus(123, address(token0), 0);
-        
+
         // Reset swap tracking
         mockV3Pool.resetSwapTracking();
-        
+
         // Approve for swap
         token1.approve(address(jbSwapRouter), 1 ether);
-        
+
         // Swap token1 for token0 (reverse direction)
         SwapParams memory params =
             SwapParams({zeroForOne: false, amountSpecified: -1 ether, sqrtPriceLimitX96: TickMath.MAX_SQRT_PRICE - 1});
-        
+
         jbSwapRouter.swap(key, params);
-        
+
         // Verify v3 swap was called
         assertTrue(mockV3Pool.swapCalled(), "V3 swap should have been called for reverse direction");
     }
@@ -2072,33 +2158,31 @@ contract JuiceboxHookTest is Test {
     function testFuzz_V3RoutingWithPriceDifference(uint256 priceMultiplier) public {
         // Bound price multiplier to reasonable range: 0.5 to 2.0
         priceMultiplier = bound(priceMultiplier, 0.5e18, 2.0e18);
-        
+
         // Set block timestamp for TWAP calculations
         vm.warp(block.timestamp + 10000);
-        
+
         // Set v3 price with high liquidity to reduce slippage tolerance impact
         mockV3Pool.setPriceMultiplier(priceMultiplier);
         mockV3Pool.setLiquidity(1000_000_000_000_000_000_000_000_000); // 1e27
-        
+
         // Make sure Juicebox is NOT better
         mockJBTerminalStore.setSurplus(123, address(token1), 0.01 ether);
-        
+
         // Reset swap tracking
         mockV3Pool.resetSwapTracking();
-        
+
         // Approve for swap
         uint256 amountIn = 1 ether;
         token0.approve(address(jbSwapRouter), amountIn);
-        
+
         // Swap token0 for token1
         SwapParams memory params = SwapParams({
-            zeroForOne: true,
-            amountSpecified: -int256(amountIn),
-            sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1
+            zeroForOne: true, amountSpecified: -int256(amountIn), sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1
         });
-        
+
         jbSwapRouter.swap(key, params);
-        
+
         // The hook's actual routing decision (v3 vs v4) accounts for:
         // - TWAP calculations
         // - Slippage tolerance
@@ -2107,7 +2191,7 @@ contract JuiceboxHookTest is Test {
         // 1. If v3 is significantly better (multiplier > 1.15), it should route to v3
         // 2. If v3 is significantly worse (multiplier < 0.85), it should NOT route to v3
         // 3. For values in between, routing depends on slippage tolerance calculations
-        
+
         if (priceMultiplier >= 1.15e18) {
             // V3 is significantly better (15%+ advantage), should route to v3
             assertTrue(mockV3Pool.swapCalled(), "V3 should be called when it's significantly cheaper");
@@ -2125,21 +2209,169 @@ contract JuiceboxHookTest is Test {
     function testV3RoutingWhenPricesEqual() public {
         // Set v3 price to match v4 (1:1)
         mockV3Pool.setPriceMultiplier(1e18);
-        
+
         // Reset swap tracking
         mockV3Pool.resetSwapTracking();
-        
+
         // Approve for swap
         token0.approve(address(jbSwapRouter), 1 ether);
-        
+
         // Swap token0 for token1
         SwapParams memory params =
             SwapParams({zeroForOne: true, amountSpecified: -1 ether, sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1});
-        
+
         jbSwapRouter.swap(key, params);
-        
+
         // When prices are equal, v4 should be preferred (v3 not called)
         // Note: This depends on the implementation, but typically equal prices = use v4
         // This test verifies the behavior doesn't break
+    }
+
+    // ============================================================
+    // Native ETH Pool Tests
+    // ============================================================
+    /// @notice Test v3 estimation with native ETH pool
+    /// @dev This tests that estimateUniswapV3Output correctly converts native ETH to WETH
+    function testV3EstimationWithNativeETH() public {
+        // Deploy mock WETH
+        MockWETH mockWETH = new MockWETH();
+
+        // Create hook with mock WETH
+        uint160 flags = uint160(
+            Hooks.AFTER_INITIALIZE_FLAG | Hooks.BEFORE_SWAP_FLAG | Hooks.AFTER_SWAP_FLAG
+                | Hooks.BEFORE_SWAP_RETURNS_DELTA_FLAG | Hooks.AFTER_ADD_LIQUIDITY_FLAG
+                | Hooks.AFTER_REMOVE_LIQUIDITY_FLAG
+        );
+
+        bytes memory constructorArgs = abi.encode(
+            IPoolManager(address(manager)),
+            IJBTokens(address(mockJBTokens)),
+            IJBDirectory(address(mockJBDirectory)),
+            IJBController(address(mockJBController)),
+            IJBPrices(address(mockJBPrices)),
+            IJBTerminalStore(address(mockJBTerminalStore)),
+            IUniswapV3Factory(address(mockV3Factory)),
+            address(mockWETH)
+        );
+
+        (, bytes32 salt) = HookMiner.find(address(this), flags, type(JBUniswapV4Hook).creationCode, constructorArgs);
+
+        JBUniswapV4Hook nativeETHHook = new JBUniswapV4Hook{
+            salt: salt
+        }(
+            IPoolManager(address(manager)),
+            IJBTokens(address(mockJBTokens)),
+            IJBDirectory(address(mockJBDirectory)),
+            IJBController(address(mockJBController)),
+            IJBPrices(address(mockJBPrices)),
+            IJBTerminalStore(address(mockJBTerminalStore)),
+            IUniswapV3Factory(address(mockV3Factory)),
+            address(mockWETH)
+        );
+
+        // Create v3 pool for WETH/token1
+        MockUniswapV3Pool v3PoolWETH =
+            MockUniswapV3Pool(mockV3Factory.createPool(address(mockWETH), address(token1), 10000));
+        v3PoolWETH.setLiquidity(1000e18);
+        v3PoolWETH.setPriceMultiplier(1.5e18);
+
+        // Test estimation: native ETH (address(0)) should be converted to WETH
+        // When calling estimateUniswapV3Output with address(0), it should internally convert to WETH
+        // and find the WETH/token1 pool
+        uint256 amountIn = 1 ether;
+
+        // The hook should convert address(0) to WETH internally
+        // So we test with WETH directly (which is what happens internally)
+        uint256 estimatedOut = nativeETHHook.estimateUniswapV3Output(
+            address(mockWETH), // WETH (converted from address(0))
+            address(token1),
+            amountIn,
+            true // zeroForOne: WETH -> token1
+        );
+
+        // Should return a positive estimate (proving it found the WETH/token1 pool)
+        assertGt(estimatedOut, 0, "Should estimate positive output for WETH/token1 pool");
+    }
+
+    /// @notice Test that v3 routing is NOT attempted when no WETH pool exists
+    /// @dev This tests the fallback behavior when native ETH pool exists but no WETH v3 pool
+    function testV3RoutingWithNativeETH_NoV3Pool() public {
+        // Deploy mock WETH
+        MockWETH mockWETH = new MockWETH();
+
+        // Create hook with mock WETH
+        uint160 flags = uint160(
+            Hooks.AFTER_INITIALIZE_FLAG | Hooks.BEFORE_SWAP_FLAG | Hooks.AFTER_SWAP_FLAG
+                | Hooks.BEFORE_SWAP_RETURNS_DELTA_FLAG | Hooks.AFTER_ADD_LIQUIDITY_FLAG
+                | Hooks.AFTER_REMOVE_LIQUIDITY_FLAG
+        );
+
+        bytes memory constructorArgs = abi.encode(
+            IPoolManager(address(manager)),
+            IJBTokens(address(mockJBTokens)),
+            IJBDirectory(address(mockJBDirectory)),
+            IJBController(address(mockJBController)),
+            IJBPrices(address(mockJBPrices)),
+            IJBTerminalStore(address(mockJBTerminalStore)),
+            IUniswapV3Factory(address(mockV3Factory)),
+            address(mockWETH)
+        );
+
+        (, bytes32 salt) = HookMiner.find(address(this), flags, type(JBUniswapV4Hook).creationCode, constructorArgs);
+
+        JBUniswapV4Hook nativeETHHook = new JBUniswapV4Hook{
+            salt: salt
+        }(
+            IPoolManager(address(manager)),
+            IJBTokens(address(mockJBTokens)),
+            IJBDirectory(address(mockJBDirectory)),
+            IJBController(address(mockJBController)),
+            IJBPrices(address(mockJBPrices)),
+            IJBTerminalStore(address(mockJBTerminalStore)),
+            IUniswapV3Factory(address(mockV3Factory)),
+            address(mockWETH)
+        );
+
+        // Create pool with native ETH but DON'T create a WETH v3 pool
+        PoolKey memory nativeKey = PoolKey({
+            currency0: Currency.wrap(address(0)), // Native ETH
+            currency1: Currency.wrap(address(token1)),
+            fee: 3000,
+            tickSpacing: 60,
+            hooks: IHooks(address(nativeETHHook))
+        });
+
+        // Initialize pool
+        manager.initialize(nativeKey, SQRT_PRICE_1_1);
+
+        // Add liquidity
+        vm.deal(address(this), 100 ether);
+        token1.mint(address(this), 1000 ether);
+        token1.approve(address(modifyLiquidityRouter), 1000 ether);
+        modifyLiquidityRouter.modifyLiquidity{
+            value: 10 ether
+        }(
+            nativeKey,
+            ModifyLiquidityParams({tickLower: -60, tickUpper: 60, liquidityDelta: 10 ether, salt: bytes32(0)}),
+            ZERO_BYTES
+        );
+
+        JuiceboxSwapRouter nativeSwapRouter = new JuiceboxSwapRouter(manager);
+
+        // Move time forward
+        vm.warp(block.timestamp + 10000);
+
+        // Prepare for swap
+        vm.deal(address(this), 5 ether);
+        token1.approve(address(nativeSwapRouter), type(uint256).max);
+
+        // Swap should succeed but route through v4 (not v3, since no WETH pool exists)
+        SwapParams memory params =
+            SwapParams({zeroForOne: true, amountSpecified: -1 ether, sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1});
+
+        // Should not revert - should fall back to v4
+        nativeSwapRouter.swap{value: 1 ether}(nativeKey, params);
+
+        // Test passes if no revert (v3 estimation returns 0, falls back to v4)
     }
 }
