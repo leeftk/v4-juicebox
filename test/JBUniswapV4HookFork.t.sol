@@ -969,7 +969,7 @@ contract JBUniswapV4HookForkTest is Test {
 
         // Record initial balance before swap
         uint256 initialNANA = IERC20(NANA).balanceOf(user);
-        
+
         // Execute via JB router to let hook choose
         vm.recordLogs();
         SwapParams memory testSwap = SwapParams({
@@ -986,8 +986,7 @@ contract JBUniswapV4HookForkTest is Test {
             // because terminals don't accept WETH directly - we'd need to unwrap WETH first
             IJBTerminal jbTerminal;
             address terminalToken = address(0x000000000000000000000000000000000000EEEe); // JB_NATIVE_TOKEN
-            try IJBDirectory(MAINNET_JB_DIRECTORY)
-                .primaryTerminalOf(projectId, terminalToken) returns (IJBTerminal t) {
+            try IJBDirectory(MAINNET_JB_DIRECTORY).primaryTerminalOf(projectId, terminalToken) returns (IJBTerminal t) {
                 jbTerminal = t;
             } catch {
                 jbTerminal = IJBTerminal(address(0));
@@ -995,11 +994,11 @@ contract JBUniswapV4HookForkTest is Test {
 
             if (jbOut > v4Out && jbOut > 0 && address(jbTerminal) != address(0)) {
                 assertEq(keccak256(bytes(route)), keccak256("juicebox"), "Expected route to be juicebox");
-                
+
                 // Verify quote accuracy: check actual tokens received match quote
                 uint256 finalNANA = IERC20(NANA).balanceOf(user);
                 uint256 nanaReceived = finalNANA > initialNANA ? finalNANA - initialNANA : 0;
-                
+
                 if (nanaReceived > 0 && jbOut > 0) {
                     uint256 diff = nanaReceived > jbOut ? nanaReceived - jbOut : jbOut - nanaReceived;
                     uint256 tolerance = jbOut / 100; // 1% tolerance
@@ -1087,7 +1086,7 @@ contract JBUniswapV4HookForkTest is Test {
         // Record initial balances before swap
         uint256 initialWETH = IERC20(WETH).balanceOf(user);
         uint256 initialNANA = IERC20(NANA).balanceOf(user);
-        
+
         vm.recordLogs();
         SwapParams memory testSwap = SwapParams({
             zeroForOne: true, amountSpecified: -int256(amountIn), sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1
@@ -1109,11 +1108,11 @@ contract JBUniswapV4HookForkTest is Test {
 
             if (jbOut > v4Out && jbOut > 0 && address(jbTerminal) != address(0)) {
                 assertEq(keccak256(bytes(route)), keccak256("juicebox"), "Expected route to be juicebox");
-                
+
                 // Verify quote accuracy: check actual WETH received matches quote
                 uint256 finalWETH = IERC20(WETH).balanceOf(user);
                 uint256 wethReceived = finalWETH > initialWETH ? finalWETH - initialWETH : 0;
-                
+
                 if (wethReceived > 0 && jbOut > 0) {
                     uint256 diff = wethReceived > jbOut ? wethReceived - jbOut : jbOut - wethReceived;
                     uint256 tolerance = jbOut / 100; // 1% tolerance
@@ -1181,7 +1180,8 @@ contract JBUniswapV4HookForkTest is Test {
             amountSpecified: -int256(5000 ether),
             sqrtPriceLimitX96: TickMath.MAX_SQRT_PRICE - 1
         });
-        try swapRouter.swap(nativeKey, priceManipulation, PoolSwapTest.TestSettings(false, false), ZERO_BYTES) {} catch {}
+        try swapRouter.swap(nativeKey, priceManipulation, PoolSwapTest.TestSettings(false, false), ZERO_BYTES) {}
+            catch {}
 
         // Calculate expected outputs for buying
         uint256 buyAmount = 1 ether; // 1 native ETH
@@ -1208,7 +1208,7 @@ contract JBUniswapV4HookForkTest is Test {
 
         // Require that terminal exists - if it doesn't, this is a test setup problem
         require(address(jbTerminal) != address(0), "Terminal must exist for this test");
-        
+
         // Only proceed if Juicebox is better than v4
         if (jbOut <= v4Out || jbOut == 0) {
             vm.stopPrank();
@@ -1251,7 +1251,7 @@ contract JBUniswapV4HookForkTest is Test {
                 uint256 diff = nanaReceived > jbOut ? nanaReceived - jbOut : jbOut - nanaReceived;
                 uint256 tolerance = jbOut / 100; // 1% tolerance
                 assertLe(diff, tolerance, "Quote should match actual received tokens (within 1% tolerance)");
-                
+
                 // Also verify it's not way off (should be at least 90% of quote)
                 assertGe(nanaReceived, jbOut * 90 / 100, "Should receive at least 90% of quoted tokens");
             }
@@ -1344,7 +1344,7 @@ contract JBUniswapV4HookForkTest is Test {
 
         // Require that terminal exists - if it doesn't, this is a test setup problem
         require(address(jbTerminal) != address(0), "Terminal must exist for this test");
-        
+
         // Only proceed if Juicebox is better than Uniswap
         // If hook looks up wrong terminal, it will route through Uniswap and test will fail
         if (jbOut <= v4Out || jbOut == 0) {
@@ -1409,7 +1409,7 @@ contract JBUniswapV4HookForkTest is Test {
                 uint256 diff = wethReceived > jbOut ? wethReceived - jbOut : jbOut - wethReceived;
                 uint256 tolerance = jbOut / 100; // 1% tolerance
                 assertLe(diff, tolerance, "Quote should match actual received tokens (within 1% tolerance)");
-                
+
                 // Also verify it's not way off (should be at least 90% of quote)
                 assertGe(wethReceived, jbOut * 90 / 100, "Should receive at least 90% of quoted tokens");
             }
@@ -1541,13 +1541,13 @@ contract JBUniswapV4HookForkTest is Test {
         // Note: We can't actually lock a real mainnet pool, but we can test that
         // the error condition exists in the code. The actual revert would happen
         // if a pool were locked during routing.
-        
+
         // For fork tests, we verify the error path exists by checking the code
         // The actual "V3 pool locked" error would occur if:
         // 1. Pool exists and is better than v4
         // 2. Hook tries to route through v3
         // 3. Pool's slot0() returns unlocked=false
-        
+
         // Since we can't lock a real pool, we document that the error exists
         // and would be triggered if a pool were locked
         assertTrue(true, "V3 pool locked error exists in _routeThroughV3");
@@ -1578,7 +1578,7 @@ contract JBUniswapV4HookForkTest is Test {
     function testFork_V3CallbackInvalidSender() public {
         // Create a malicious address that tries to call the callback
         address maliciousSender = address(0xBAD);
-        
+
         // Prepare callback data
         bytes memory data = abi.encode(WETH, NANA, uint24(10000));
 
@@ -1594,7 +1594,7 @@ contract JBUniswapV4HookForkTest is Test {
         // Use token pair that doesn't have a pool (use non-existent tokens)
         address nonExistentToken0 = address(0x1111111111111111111111111111111111111111);
         address nonExistentToken1 = address(0x2222222222222222222222222222222222222222);
-        
+
         // Ensure token0 < token1
         if (nonExistentToken0 > nonExistentToken1) {
             (nonExistentToken0, nonExistentToken1) = (nonExistentToken1, nonExistentToken0);
@@ -1638,7 +1638,7 @@ contract JBUniswapV4HookForkTest is Test {
         // The actual revert would occur if:
         // 1. Pool's slot0() returns observationCardinality == 0
         // 2. _getOldestObservationSecondsAgo() is called
-        
+
         // Since real pools have cardinality > 0, we document that the error exists
         // and would be triggered if a pool had cardinality 0
         assertTrue(true, "_getOldestObservationSecondsAgo error exists for zero cardinality");

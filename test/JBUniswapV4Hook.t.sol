@@ -1261,7 +1261,7 @@ contract JuiceboxHookTest is Test {
 
         // Theoretical tokens = (weight * paymentAmount) / 1e18 = (1000e18 * 1e18) / 1e18 = 1000e18
         uint256 theoreticalTokens = (weight * paymentAmount) / 1e18;
-        
+
         // Expected tokens after reserved percent = theoreticalTokens * (10000 - 5000) / 10000
         uint256 expectedAfterReserved = (theoreticalTokens * (10000 - reservedPercent)) / 10000;
 
@@ -1284,7 +1284,7 @@ contract JuiceboxHookTest is Test {
 
         // Theoretical tokens = (weight * paymentAmount) / 1e18 = (10000e18 * 1e18) / 1e18 = 10000e18
         uint256 theoreticalTokens = (weight * paymentAmount) / 1e18;
-        
+
         // Expected tokens after reserved percent = theoreticalTokens * (10000 - 6200) / 10000
         uint256 expectedAfterReserved = (theoreticalTokens * (10000 - reservedPercent)) / 10000;
 
@@ -1348,12 +1348,12 @@ contract JuiceboxHookTest is Test {
     function test_Non18DecimalTokens_USDC_6Decimals() public {
         // Create a USDC-like token with 6 decimals
         MockERC20WithDecimals usdc = new MockERC20WithDecimals("USD Coin", "USDC", 6);
-        
+
         // Set up project for this token
         uint256 projectId = 456;
         mockJBTokens.setProjectId(address(usdc), projectId);
         mockJBController.setWeight(projectId, 1000e18); // 1000 tokens per ETH
-        
+
         // Set 1:1 price (1 USDC = 1 ETH, but accounting for decimals)
         // 1 USDC (1e6) should equal 1 ETH (1e18)
         // So price = 1e18 / 1e6 = 1e12 (scaled by 1e18) = 1e30
@@ -1395,12 +1395,12 @@ contract JuiceboxHookTest is Test {
     function test_Non18DecimalTokens_WBTC_8Decimals() public {
         // Create a WBTC-like token with 8 decimals
         MockERC20WithDecimals wbtc = new MockERC20WithDecimals("Wrapped BTC", "WBTC", 8);
-        
+
         // Set up project for this token
         uint256 projectId = 789;
         mockJBTokens.setProjectId(address(wbtc), projectId);
         mockJBController.setWeight(projectId, 1000e18); // 1000 tokens per ETH
-        
+
         // Set price: 1 WBTC = 30 ETH (example)
         // pricePerUnitOf returns baseCurrency per unitCurrency, scaled by 1e18
         // So: 30 ETH per WBTC = 30e18
@@ -1425,12 +1425,12 @@ contract JuiceboxHookTest is Test {
     function test_Non18DecimalTokens_ZeroDecimals() public {
         // Create a token with 0 decimals (like some governance tokens)
         MockERC20WithDecimals zeroDecToken = new MockERC20WithDecimals("Zero Decimal", "ZERO", 0);
-        
+
         // Set up project for this token
         uint256 projectId = 999;
         mockJBTokens.setProjectId(address(zeroDecToken), projectId);
         mockJBController.setWeight(projectId, 1000e18);
-        
+
         // Set 1:1 price
         uint32 tokenCurrencyId = uint32(uint160(address(zeroDecToken)));
         uint256 baseCurrency = 1;
@@ -1453,11 +1453,11 @@ contract JuiceboxHookTest is Test {
         // Create a contract that doesn't implement decimals()
         // We'll use a simple contract address that's not an ERC20
         address nonERC20 = address(0x1234);
-        
+
         // _getTokenDecimals() should default to 18 for non-ERC20 addresses
         // We can't directly test this, but we can verify it works via calculateExpectedTokensWithCurrency
         // Actually, we need a way to test this. Let's create a minimal contract without decimals
-        
+
         // For now, we verify the behavior exists in the code
         // The code at line 805-809 shows: try IERC20Metadata(token).decimals() returns (uint8 decimals) { return decimals; } catch { return 18; }
         assertTrue(true, "_getTokenDecimals() defaults to 18 when decimals() not available");
@@ -1468,15 +1468,15 @@ contract JuiceboxHookTest is Test {
     function testFuzz_Non18DecimalTokens_VariousDecimals(uint8 decimals) public {
         // Bound decimals to valid range (0-18, though >18 shouldn't exist in practice)
         decimals = uint8(bound(decimals, 0, 18));
-        
+
         // Create token with specified decimals
         MockERC20WithDecimals testToken = new MockERC20WithDecimals("Test Token", "TEST", decimals);
-        
+
         // Set up project
         uint256 projectId = uint256(decimals) + 1000; // Unique project ID
         mockJBTokens.setProjectId(address(testToken), projectId);
         mockJBController.setWeight(projectId, 1000e18);
-        
+
         // Set 1:1 price
         uint32 tokenCurrencyId = uint32(uint160(address(testToken)));
         uint256 baseCurrency = 1;

@@ -122,8 +122,9 @@ contract SlippageToleranceTest is Test {
         bool zeroForOne = terminalToken == token0;
         uint256 base = FullMath.mulDiv(uint256(amountIn), 10 * hook.TWAP_SLIPPAGE_DENOMINATOR(), uint256(liquidity));
         uint256 sqrtP = uint256(TickMath.getSqrtPriceAtTick(TICK_ONE_TO_ONE));
-        uint256 raw =
-            zeroForOne ? FullMath.mulDiv(base, sqrtP, uint256(1) << 96) : FullMath.mulDiv(base, uint256(1) << 96, sqrtP);
+        uint256 raw = zeroForOne
+            ? FullMath.mulDiv(base, sqrtP, uint256(1) << 96)
+            : FullMath.mulDiv(base, uint256(1) << 96, sqrtP);
 
         if (raw == 0) {
             // When raw is zero, implementation returns the UNCERTAIN floor directly
@@ -153,7 +154,7 @@ contract SlippageToleranceTest is Test {
         // Can't actually get sqrtP == 0 from TickMath, but the code handles it defensively
         int24 minTick = -887272;
         uint160 sqrtP = TickMath.getSqrtPriceAtTick(minTick);
-        
+
         assertTrue(sqrtP > 0, "Even minimum tick gives sqrtP > 0");
         assertEq(hook.TWAP_SLIPPAGE_DENOMINATOR(), 10_000, "TWAP_SLIPPAGE_DENOMINATOR should be 10000");
     }
@@ -187,7 +188,7 @@ contract SlippageToleranceTest is Test {
         // Safety check ensures maxAllowed never exceeds 100%
         uint256 maxAllowed88 = hook.TWAP_SLIPPAGE_DENOMINATOR() * 88 / 100;
         uint256 maxAllowed67 = hook.TWAP_SLIPPAGE_DENOMINATOR() * 67 / 100;
-        
+
         assertLe(maxAllowed88, hook.TWAP_SLIPPAGE_DENOMINATOR(), "88% cap should be <= 100%");
         assertLe(maxAllowed67, hook.TWAP_SLIPPAGE_DENOMINATOR(), "67% cap should be <= 100%");
     }
