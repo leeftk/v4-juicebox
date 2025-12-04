@@ -11,12 +11,12 @@ The `JBUniswapV4Hook` is a Uniswap V4 hook that intelligently routes swaps betwe
 
 ### Key Features
 
-- ✅ **Multi-Route Price Comparison** - Compares Uniswap V4, Uniswap V3, and Juicebox prices on every swap
+- ✅ **Multi-Route Price Comparison** - When a Juicebox project token is involved, compares Uniswap V4, Uniswap V3, and Juicebox prices for each swap
 - ✅ **Optimal Routing** - Automatically routes to the cheapest option (most tokens for user)
 - ✅ **TWAP Oracle Protection** - Protects against price manipulation and front-running using time-weighted averages
 - ✅ **Uniswap V3 Integration** - Routes through V3 pools when they offer better prices than V4
 - ✅ **Multi-Currency Support** - Works with native ETH and ERC20 tokens (including non-18 decimal tokens)
-- ✅ **Event Transparency** - Emits detailed price comparison and routing decision events
+- ✅ **Event Transparency** - Emits routing decision events with expected outputs for the selected route
 - ✅ **Slippage Protection** - Dynamic slippage tolerance based on liquidity and TWAP calculations
 
 ## Architecture
@@ -24,6 +24,7 @@ The `JBUniswapV4Hook` is a Uniswap V4 hook that intelligently routes swaps betwe
 ### Core Components
 
 **`JBUniswapV4Hook.sol`** - Main hook contract implementing:
+
 - `beforeSwap()` - Price comparison and routing logic across V4, V3, and Juicebox
 - `afterSwap()` - Oracle observation recording for TWAP calculations
 - `afterInitialize()` - Oracle initialization for new pools
@@ -47,6 +48,7 @@ beforeSwapReturnDelta: true        // Override swap behavior for routing
 ### Integration Points
 
 #### Juicebox Protocol Contracts
+
 - **`IJBTokens`** - Identifies Juicebox project tokens and maps them to project IDs
 - **`IJBDirectory`** - Retrieves primary terminals for project payments
 - **`IJBController`** - Retrieves project rulesets and weight (tokens per payment unit)
@@ -55,6 +57,7 @@ beforeSwapReturnDelta: true        // Override swap behavior for routing
 - **`IJBMultiTerminal`** - Processes payments (`pay()`) and token redemptions (`cashOutTokensOf()`)
 
 #### Uniswap Contracts
+
 - **`IPoolManager`** - Uniswap V4 pool manager for V4 pool operations
 - **`IUniswapV3Factory`** - Uniswap V3 factory for V3 pool lookups (10000 fee tier)
 - **`IUniswapV3Pool`** - Uniswap V3 pool interface for routing through V3 pools
@@ -120,6 +123,7 @@ For V3 routing, the hook calculates dynamic slippage tolerance based on:
 4. **Logarithmic Scaling**: Smooth growth with diminishing returns
 
 The formula:
+
 - Base calculation: `(amountIn * 10 * 10000) / liquidity`
 - Normalized by sqrt price: `base * sqrtP / 2^96` (or inverse)
 - Logarithmic adjustment: `baseValue + (scaleFactor * log2(rawSlippageBps)) / 2`
@@ -145,15 +149,18 @@ The hook properly handles tokens with different decimal counts:
 - **0 decimals**: Handled gracefully with fallback to 18
 
 The `_getTokenDecimals()` function attempts to read decimals from the token contract, falling back to 18 if not available.
+Note: native ETH (`address(0)`) is normalized to `JB_NATIVE_TOKEN` for Juicebox interactions. WETH is treated as a separate ERC20 token with its own configuration and is not aliased to the native ETH currency.
 
 ## Contract Functions
 
 ### Public View Functions
 
 #### `calculateExpectedTokensWithCurrency(uint256 projectId, address paymentToken, uint256 paymentAmount)`
+
 Calculates expected tokens for buying a Juicebox project token with any payment currency.
 
 **Parameters:**
+
 - `projectId`: The Juicebox project ID
 - `paymentToken`: The token being used for payment (address(0) for native ETH)
 - `paymentAmount`: The amount being paid (in the token's native decimals)
@@ -161,9 +168,11 @@ Calculates expected tokens for buying a Juicebox project token with any payment 
 **Returns:** Expected number of tokens to be received
 
 #### `calculateExpectedOutputFromSelling(uint256 projectId, uint256 tokenAmountIn, address outputToken)`
+
 Calculates expected output when selling Juicebox project tokens.
 
 **Parameters:**
+
 - `projectId`: The Juicebox project ID
 - `tokenAmountIn`: The number of project tokens being sold
 - `outputToken`: The token to receive (address(0) for native ETH)
@@ -171,9 +180,11 @@ Calculates expected output when selling Juicebox project tokens.
 **Returns:** Expected amount of output tokens
 
 #### `estimateUniswapOutput(PoolId poolId, PoolKey memory key, uint256 amountIn, bool zeroForOne)`
+
 Estimates output from a Uniswap V4 swap using TWAP oracle.
 
 **Parameters:**
+
 - `poolId`: The V4 pool ID
 - `key`: The pool key
 - `amountIn`: Input amount
@@ -182,9 +193,11 @@ Estimates output from a Uniswap V4 swap using TWAP oracle.
 **Returns:** Estimated output amount
 
 #### `estimateUniswapV3Output(address token0, address token1, uint256 amountIn, bool zeroForOne)`
+
 Estimates output from a Uniswap V3 swap using TWAP oracle with slippage tolerance.
 
 **Parameters:**
+
 - `token0`: First token in pair (must be < token1)
 - `token1`: Second token in pair
 - `amountIn`: Input amount
@@ -193,9 +206,11 @@ Estimates output from a Uniswap V3 swap using TWAP oracle with slippage toleranc
 **Returns:** Estimated output amount
 
 #### `observeTWAP(PoolId poolId, uint32 secondsAgo, int24 tick, uint16 index, uint128 liquidity, uint16 cardinality)`
+
 Observes TWAP tick for a given pool and time window.
 
 **Parameters:**
+
 - `poolId`: The V4 pool ID
 - `secondsAgo`: Seconds in the past to calculate TWAP from
 - `tick`: Current tick
@@ -206,20 +221,25 @@ Observes TWAP tick for a given pool and time window.
 **Returns:** Arithmetic mean tick over the time window
 
 #### `_consult(IUniswapV3Pool pool, uint32 secondsAgo)`
+
 Calculates time-weighted means of tick and liquidity for a V3 pool.
 
 **Parameters:**
+
 - `pool`: The V3 pool to observe
 - `secondsAgo`: Number of seconds in the past
 
 **Returns:**
+
 - `arithmeticMeanTick`: Arithmetic mean tick
 - `harmonicMeanLiquidity`: Harmonic mean liquidity
 
 #### `_getOldestObservationSecondsAgo(IUniswapV3Pool pool)`
+
 Returns the number of seconds ago of the oldest stored observation for a V3 pool.
 
 **Parameters:**
+
 - `pool`: The V3 pool to query
 
 **Returns:** Number of seconds ago of the oldest observation
@@ -227,9 +247,11 @@ Returns the number of seconds ago of the oldest stored observation for a V3 pool
 ### Hook Functions
 
 #### `beforeSwap(address, PoolKey calldata key, SwapParams calldata params, bytes calldata)`
+
 Main routing logic that compares prices and routes to the best option.
 
 **Flow:**
+
 1. Validates exact-input swap (reverts on exact-output)
 2. Detects if swap involves Juicebox project token
 3. Calculates expected outputs from V4, V3, and Juicebox
@@ -237,32 +259,40 @@ Main routing logic that compares prices and routes to the best option.
 5. Returns swap delta to override V4 swap if routing elsewhere
 
 #### `afterSwap(address, PoolKey calldata key, SwapParams calldata, BalanceDelta, bytes calldata)`
+
 Records oracle observation after swap completes.
 
 #### `afterInitialize(address, PoolKey calldata key, uint160, int24 tick)`
+
 Initializes oracle observations when a new pool is created.
 
 #### `afterAddLiquidity(address, PoolKey calldata key, ModifyLiquidityParams calldata, BalanceDelta, bytes calldata)`
+
 Records oracle observation after liquidity is added.
 
 #### `afterRemoveLiquidity(address, PoolKey calldata key, ModifyLiquidityParams calldata, BalanceDelta, bytes calldata)`
+
 Records oracle observation after liquidity is removed.
 
 ### Internal Functions
 
 #### `_routeThroughJuicebox(...)`
+
 Routes a swap through Juicebox terminal instead of Uniswap.
 
 **Handles:**
+
 - Buying JB tokens via `terminal.pay()`
 - Selling JB tokens via `terminal.cashOutTokensOf()`
 - Token normalization (native ETH → JB_NATIVE_TOKEN)
 - Currency conversion via `IJBPrices`
 
 #### `_routeThroughV3(...)`
+
 Routes a swap through Uniswap V3 pool.
 
 **Handles:**
+
 - Pool lookup via V3 factory
 - Pool lock check
 - WETH wrapping for native ETH input
@@ -271,44 +301,53 @@ Routes a swap through Uniswap V3 pool.
 - Callback payment via `uniswapV3SwapCallback()`
 
 #### `uniswapV3SwapCallback(int256 amount0Delta, int256 amount1Delta, bytes calldata data)`
+
 Callback function called by V3 pool during swap execution.
 
 **Validates:**
+
 - At least one delta is positive (actual swap occurred)
 - Caller is a valid V3 pool from factory
 - Pool exists (not address(0))
 
 **Pays:** Required token amount to the V3 pool
 
-#### `_getQuote(uint256 projectId, address projectToken, uint256 amountIn, address terminalToken)`
-Gets a quote based on V3 TWAP with slippage tolerance.
+#### `_getQuote(address projectToken, uint256 amountIn, address terminalToken)`
+
+Gets a quote based on Uniswap V3 TWAP with slippage tolerance.
 
 **Flow:**
-1. Looks up V3 pool (10000 fee tier)
+
+1. Looks up V3 pool for `(projectToken, terminalToken, 10000 fee tier)`
 2. Validates pool exists and is unlocked
-3. Determines TWAP window (uses oldest observation if < 1 hour)
-4. Calculates TWAP tick and liquidity
-5. Applies slippage tolerance
-6. Returns quote amount
+3. Determines TWAP window (uses oldest observation if `< 1 hour`)
+4. Calculates TWAP tick and harmonic mean liquidity
+5. Computes a slippage tolerance based on liquidity and swap size
+6. Returns the minimum acceptable output amount after applying that tolerance
 
 #### `_getSlippageTolerance(...)`
+
 Calculates dynamic slippage tolerance based on liquidity and swap size.
 
 **Formula:**
+
 - Base: `(amountIn * 10 * 10000) / liquidity`
 - Normalized by sqrt price
 - Logarithmic scaling with caps
 - Returns value in basis points (0-10000)
 
 #### `_getTWAPSqrtPrice(PoolId poolId)`
+
 Gets the TWAP sqrt price for a V4 pool.
 
 **Returns:** TWAP sqrt price, or 0 if insufficient observations
 
 #### `_recordObservation(PoolId poolId)`
+
 Records a new oracle observation for a pool.
 
 **Features:**
+
 - Auto-grows cardinality when at capacity
 - Doubles cardinality up to 256 maximum
 - Writes observation to ring buffer
@@ -346,14 +385,16 @@ event RouteSelected(
     bool useJuicebox,
     uint256 expectedTokens
 );
-// Emitted when routing decision is made
+// Emitted when the final routing decision is made for a swap.
+// `expectedTokens` is the *expected* output for the chosen route at decision time.
 
 event BestRouteSelected(
     PoolId indexed poolId,
     string routeType,  // "v3", "v4", or "juicebox"
     uint256 expectedTokens
 );
-// Emitted when best route is selected among all three options
+// Emitted when the best route is selected among all three options based on expected outputs.
+// Does not emit all three quotes; only the best route and its expected output.
 ```
 
 ## Security Considerations
@@ -449,6 +490,7 @@ forge test --match-contract JBUniswapV4HookForkTest
 ```
 
 **Note:** Public RPC endpoints may rate limit. For reliable fork testing, use your own RPC endpoint from providers like:
+
 - [Alchemy](https://www.alchemy.com/)
 - [Infura](https://www.infura.io/)
 - [QuickNode](https://www.quicknode.com/)
@@ -486,6 +528,7 @@ constructor(
 ### Mainnet Addresses
 
 **Juicebox Protocol (Mainnet):**
+
 - `IJBTokens`: `0x4d0Edd347FB1fA21589C1E109B3474924BE87636`
 - `IJBDirectory`: `0x0061E516886A0540F63157f112C0588eE0651dCF`
 - `IJBController`: `0x27da30646502e2f642bE5281322Ae8C394F7668a`
@@ -493,6 +536,7 @@ constructor(
 - `IJBTerminalStore`: `0xfE33B439Ec53748C87DcEDACb83f05aDd5014744`
 
 **Uniswap V3 (Mainnet):**
+
 - `IUniswapV3Factory`: `0x1F98431c8aD98523631AE4a59f267346ea31F984`
 - `WETH`: `0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2`
 
@@ -573,20 +617,20 @@ address constant JB_NATIVE_TOKEN = 0x000...EEEe;       // JB native token
 
 ## Gas Optimization
 
-- **Project IDs cached**: After first detection, project IDs are cached
 - **TWAP calculations**: Uses efficient Uniswap V4 library functions
-- **Minimal storage writes**: Observations use ring buffer (overwrites old data)
-- **Selective routing**: Only calculates routes when JB token detected
-- **Custom errors**: Gas-efficient error handling (no string storage)
+- **Minimal storage writes**: Observations use a ring buffer (overwrites old data)
+- **Selective routing**: Only performs multi-route comparison when a JB token is involved
+- **Custom errors**: Gas-efficient error handling (no revert strings)
 
 ## Troubleshooting
 
 ### Hook Deployment Failures
 
 Ensure hook permissions match flags:
+
 ```solidity
-Hooks.AFTER_INITIALIZE_FLAG | 
-Hooks.BEFORE_SWAP_FLAG | 
+Hooks.AFTER_INITIALIZE_FLAG |
+Hooks.BEFORE_SWAP_FLAG |
 Hooks.AFTER_SWAP_FLAG |
 Hooks.BEFORE_SWAP_RETURNS_DELTA_FLAG |
 Hooks.AFTER_ADD_LIQUIDITY_FLAG |
@@ -596,6 +640,7 @@ Hooks.AFTER_REMOVE_LIQUIDITY_FLAG
 ### TWAP Returns Zero
 
 Possible causes:
+
 - Pool too new (< 2 observations)
 - Insufficient time elapsed (< TWAP_PERIOD)
 - No swaps in lookback window
@@ -605,6 +650,7 @@ Possible causes:
 ### Price Comparison Issues
 
 Check:
+
 - Currency IDs set correctly for all tokens in Juicebox
 - Juicebox project has non-zero weight
 - Price feed exists for currency conversions
@@ -613,6 +659,7 @@ Check:
 ### V3 Routing Failures
 
 Possible causes:
+
 - No V3 pool exists for token pair (10000 fee tier)
 - V3 pool is locked
 - Insufficient liquidity in V3 pool
@@ -622,17 +669,20 @@ Possible causes:
 ## Resources
 
 ### Juicebox Protocol
+
 - [Documentation](https://docs.juicebox.money)
 - [Protocol Repository](https://github.com/jbx-protocol)
 - [Core V5 Contracts](https://github.com/jbx-protocol/juice-contracts-v3)
 
 ### Uniswap V4
+
 - [Documentation](https://docs.uniswap.org/contracts/v4/overview)
 - [v4-periphery](https://github.com/uniswap/v4-periphery)
 - [v4-core](https://github.com/uniswap/v4-core)
 - [v4-by-example](https://v4-by-example.org)
 
 ### Uniswap V3
+
 - [Documentation](https://docs.uniswap.org/contracts/v3/overview)
 - [Oracle Guide](https://docs.uniswap.org/concepts/protocol/oracle)
 - [TWAP Best Practices](https://blog.uniswap.org/uniswap-v3-oracles)

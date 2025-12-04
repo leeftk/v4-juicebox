@@ -297,10 +297,12 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
             }
         }
 
-        // Calculate tokens based on the payment amount and weight
-        // Formula: expectedTokens = (tokensPerBaseCurrency * paymentAmount * baseCurrencyPerPaymentToken) / (1e18 * paymentTokenDecimals)
-        // This converts paymentAmount to baseCurrency, then multiplies by tokensPerBaseCurrency
-        // Use FullMath for safe multiplication to prevent overflow
+        // Calculate tokens based on the payment amount and weight.
+        // Implementation details:
+        // 1. paymentAmount is first normalized to 18 decimals.
+        // 2. We compute: baseTokens = (tokensPerBaseCurrency * paymentAmount18) / 1e18.
+        // 3. If baseCurrencyPerPaymentToken != 1e18, we then scale baseTokens by that rate (again / 1e18).
+        // See _calculateTokensWithCurrency() for the exact math.
         uint256 estimatedTokens = _calculateTokensWithCurrency(
             tokensPerBaseCurrency, paymentAmount, paymentTokenDecimals, baseCurrencyPerPaymentToken
         );
@@ -403,6 +405,10 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
         uint128 liquidity,
         uint16 cardinality
     ) external view returns (int24 arithmeticMeanTick) {
+        if (secondsAgo == 0) {
+            revert JBUniswapV4Hook_SecondsAgoCannotBeZero();
+        }
+
         uint32 currentTime = uint32(block.timestamp);
 
         // Get tick cumulative for current time
@@ -414,7 +420,9 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
             observations[poolId].observeSingle(currentTime, secondsAgo, tick, index, liquidity, cardinality);
 
         // Calculate arithmetic mean tick
-        arithmeticMeanTick = int24((tickCumulativeCurrent - tickCumulativePast) / int48(uint48(secondsAgo)));
+        arithmeticMeanTick = int24(
+            (tickCumulativeCurrent - tickCumulativePast) / int48(uint48(secondsAgo))
+        );
     }
 
     /// @notice Estimate expected output tokens from a Uniswap v3 swap using TWAP
@@ -437,17 +445,16 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
         //   We want: how many token0 do we get for token1? So projectToken=token0, terminalToken=token1
         address inputToken = zeroForOne ? token0 : token1;
         address outputToken = zeroForOne ? token1 : token0;
-        estimatedOut = _getQuote(0, outputToken, amountIn, inputToken);
+        estimatedOut = _getQuote(outputToken, amountIn, inputToken);
         return estimatedOut;
     }
 
-    /// @notice Get a quote based on the TWAP, using the TWAP window and slippage tolerance for the specified project.
-    /// @param projectId The ID of the project which the swap is associated with.
-    /// @param projectToken The project token being swapped for.
+    /// @notice Get a quote based on the TWAP, using the standard TWAP window and slippage tolerance.
+    /// @param projectToken The token being received (quote token).
     /// @param amountIn The number of terminal tokens being used to swap.
-    /// @param terminalToken The terminal token being paid in and used to swap.
+    /// @param terminalToken The token being paid in (base token).
     /// @return amountOut The minimum number of tokens to receive based on the TWAP and its params.
-    function _getQuote(uint256 projectId, address projectToken, uint256 amountIn, address terminalToken)
+    function _getQuote(address projectToken, uint256 amountIn, address terminalToken)
         internal
         view
         returns (uint256 amountOut)
@@ -772,12 +779,14 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
     }
 
     /// @notice Normalizes a token address to Juicebox's native token representation for pricing
-    /// @dev For price quoting, WETH and native ETH are equivalent, so both normalize to JB_NATIVE_TOKEN
+    /// @dev For price quoting, only native ETH is normalized to JB_NATIVE_TOKEN. WETH is treated
+    ///      as a distinct currency and must have its own Juicebox configuration if used.
     /// @param token The token address to normalize
-    /// @return normalizedToken The normalized token address (JB_NATIVE_TOKEN for native ETH/WETH)
+    /// @return normalizedToken The normalized token address (JB_NATIVE_TOKEN only for native ETH)
     function _normalizeToken(address token) internal view returns (address) {
-        return (token == UNISWAP_NATIVE_ETH || token == WETH) ? JB_NATIVE_TOKEN : token;
+        return token == UNISWAP_NATIVE_ETH ? JB_NATIVE_TOKEN : token;
     }
+
 
     /// @notice Normalizes a token address for terminal interactions
     /// @dev Only normalizes native ETH to JB_NATIVE_TOKEN. WETH is only used when routing through v3,
@@ -1073,7 +1082,7 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
         IJBTerminal jbTerminal = _getPrimaryTerminal(projectId, terminalToken);
         bool jbTerminalAvailable = address(jbTerminal) != address(0) && address(jbTerminal).code.length > 0;
         bool juiceboxBetterThanUniswap = jbTerminalAvailable && juiceboxExpectedOutput > bestExpectedTokens;
-
+        
         if (juiceboxBetterThanUniswap && juiceboxExpectedOutput > 0) {
             bestExpectedTokens = juiceboxExpectedOutput;
             bestRoute = "juicebox";
@@ -1083,28 +1092,30 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
 
         // If Juicebox gives better output, route through Juicebox
         if (juiceboxBetterThanUniswap && juiceboxExpectedOutput > 0) {
+            // Log the expected amount for the chosen route
+            emit RouteSelected(poolId, true, juiceboxExpectedOutput);
+
             // Execute Juicebox routing (works for both buying and selling)
             uint256 outputReceived =
                 _routeThroughJuicebox(projectId, inputCurrency, outputCurrency, amountIn, isBuyingJBToken, jbTerminal);
 
-            emit RouteSelected(poolId, true, outputReceived);
-
             return (BaseHook.beforeSwap.selector, _createSwapDelta(amountIn, outputReceived), 0);
         }
 
-        // If v3 is better than v4, execute the v3 swap
         if (v3BetterThanV4 && uniswapV3ExpectedTokens > 0) {
+            // Log the expected amount for the chosen route
+            emit RouteSelected(poolId, false, uniswapV3ExpectedTokens);
+
             // Execute v3 swap (pass pre-calculated token ordering with WETH mapping)
             // Note: v3Token0 and v3Token1 already have address(0) converted to WETH
-            uint256 outputReceived = _routeThroughV3(v3Token0, v3Token1, amountIn, v3ZeroForOne, tokenIn, tokenOut);
-
-            emit RouteSelected(poolId, false, outputReceived);
+            uint256 outputReceived =
+                _routeThroughV3(v3Token0, v3Token1, amountIn, v3ZeroForOne, tokenIn, tokenOut);
 
             // Return delta that reflects what hook did
             return (BaseHook.beforeSwap.selector, _createSwapDelta(amountIn, outputReceived), 0);
         }
 
-        // Proceed with normal v4 swap
+        // Proceed with normal v4 swap (RouteSelected already logs expected V4 amount)
         emit RouteSelected(poolId, false, uniswapV4ExpectedTokens);
         return (BaseHook.beforeSwap.selector, BeforeSwapDeltaLibrary.ZERO_DELTA, 0);
     }
