@@ -54,9 +54,6 @@ import {JBRulesetMetadata} from "@bananapus/core-v5/structs/JBRulesetMetadata.so
 import {JBRulesetMetadataResolver} from "@bananapus/core-v5/libraries/JBRulesetMetadataResolver.sol";
 import {JBConstants} from "@bananapus/core-v5/libraries/JBConstants.sol";
 
-// Import PRB Math for logarithmic functions
-import {UD60x18} from "../lib/prb-math/src/ud60x18/ValueType.sol";
-import {log2} from "../lib/prb-math/src/ud60x18/Math.sol";
 
 /// @title JBUniswapV4Hook
 /// @notice Official Juicebox integration for Uniswap v4 that provides intelligent price comparison and optimal routing
@@ -153,9 +150,6 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
     /// @notice The denominator used when calculating TWAP slippage percent values.
     uint256 public constant TWAP_SLIPPAGE_DENOMINATOR = 10_000;
 
-    /// @notice The uncertain slippage tolerance allowed.
-    uint256 public constant UNCERTAIN_TWAP_SLIPPAGE_TOLERANCE = 1050;
-
     //*********************************************************************//
     // --------------------- public stored properties -------------------- //
     //*********************************************************************//
@@ -244,7 +238,7 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
     /// @param paymentToken The token being used for payment
     /// @param paymentAmount The amount being paid (in the token's native decimals)
     /// @return expectedTokens The expected number of tokens to be received
-    function calculateExpectedTokensWithCurrency(uint256 projectId, address paymentToken, uint256 paymentAmount)
+    function calculateExpectedTokensWithCurrency(uint256 projectId, address paymentToken, uint256 paymentAmount, uint256 slippageToleranceBps)
         public
         view
         returns (uint256 expectedTokens)
@@ -326,7 +320,7 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
     /// @param tokenAmountIn The amount of JB tokens being sold
     /// @param outputToken The token to receive (e.g., ETH, USDC)
     /// @return expectedOutput The expected amount of output tokens received
-    function calculateExpectedOutputFromSelling(uint256 projectId, uint256 tokenAmountIn, address outputToken)
+    function calculateExpectedOutputFromSelling(uint256 projectId, uint256 tokenAmountIn, address outputToken, uint256 slippageToleranceBps)
         public
         view
         returns (uint256 expectedOutput)
@@ -351,7 +345,7 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
     /// @param amountIn The input amount
     /// @param zeroForOne Whether swapping token0 for token1
     /// @return estimatedOut The estimated output amount
-    function estimateUniswapOutput(PoolId poolId, PoolKey memory key, uint256 amountIn, bool zeroForOne)
+    function estimateUniswapOutput(PoolId poolId, PoolKey memory key, uint256 amountIn, bool zeroForOne, uint256 slippageToleranceBps)
         public
         view
         returns (uint256 estimatedOut)
@@ -384,6 +378,14 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
         // fee is in hundredths of a bip, so 3000 = 0.3%
         if (key.fee > 0) {
             estimatedOut = estimatedOut - FullMath.mulDiv(estimatedOut, key.fee, 1000000);
+        }
+
+        // Apply user-specified slippage tolerance (required parameter)
+        uint256 slippageAmount = FullMath.mulDiv(estimatedOut, slippageToleranceBps, TWAP_SLIPPAGE_DENOMINATOR);
+        if (slippageAmount < estimatedOut) {
+            estimatedOut -= slippageAmount;
+        } else {
+            estimatedOut = 0;
         }
 
         return estimatedOut;
@@ -432,7 +434,7 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
     /// @param amountIn The input amount
     /// @param zeroForOne Whether swapping token0 for token1
     /// @return estimatedOut The estimated output amount
-    function estimateUniswapV3Output(address token0, address token1, uint256 amountIn, bool zeroForOne)
+    function estimateUniswapV3Output(address token0, address token1, uint256 amountIn, bool zeroForOne, uint256 slippageToleranceBps)
         external
         view
         returns (uint256 estimatedOut)
@@ -445,7 +447,7 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
         //   We want: how many token0 do we get for token1? So projectToken=token0, terminalToken=token1
         address inputToken = zeroForOne ? token0 : token1;
         address outputToken = zeroForOne ? token1 : token0;
-        estimatedOut = _getQuote(outputToken, amountIn, inputToken);
+        estimatedOut = _getQuote(outputToken, amountIn, inputToken, slippageToleranceBps);
         return estimatedOut;
     }
 
@@ -453,8 +455,9 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
     /// @param projectToken The token being received (quote token).
     /// @param amountIn The number of terminal tokens being used to swap.
     /// @param terminalToken The token being paid in (base token).
+    /// @param slippageToleranceBps User-specified slippage tolerance in basis points. If 0, uses automatic calculation.
     /// @return amountOut The minimum number of tokens to receive based on the TWAP and its params.
-    function _getQuote(address projectToken, uint256 amountIn, address terminalToken)
+    function _getQuote(address projectToken, uint256 amountIn, address terminalToken, uint256 slippageToleranceBps)
         internal
         view
         returns (uint256 amountOut)
@@ -520,14 +523,8 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
         // If there's no liquidity, return an empty quote.
         if (liquidity == 0) return 0;
 
-        // Calculate the slippage tolerance.
-        uint256 slippageTolerance = _getSlippageTolerance({
-            amountIn: amountIn,
-            liquidity: liquidity,
-            projectToken: projectToken,
-            terminalToken: terminalToken,
-            arithmeticMeanTick: arithmeticMeanTick
-        });
+        // Use user-specified slippage tolerance (required parameter)
+        uint256 slippageTolerance = slippageToleranceBps;
 
         // If the slippage tolerance is at or above the maximum, return an empty quote.
         if (slippageTolerance >= TWAP_SLIPPAGE_DENOMINATOR) return 0;
@@ -547,91 +544,6 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
         amountOut -= slippageAmount;
     }
 
-    /// @notice Get the slippage tolerance for a given amount in and liquidity.
-    /// @param amountIn The amount in to get the slippage tolerance for.
-    /// @param liquidity The liquidity to get the slippage tolerance for.
-    /// @param projectToken The project token to get the slippage tolerance for.
-    /// @param terminalToken The terminal token to get the slippage tolerance for.
-    /// @param arithmeticMeanTick The arithmetic mean tick to get the slippage tolerance for.
-    /// @return slippageTolerance The slippage tolerance for the given amount in and liquidity.
-    function _getSlippageTolerance(
-        uint256 amountIn,
-        uint128 liquidity,
-        address projectToken,
-        address terminalToken,
-        int24 arithmeticMeanTick
-    ) internal pure returns (uint256) {
-        // Direction: is terminalToken token0?
-        (address token0,) = projectToken < terminalToken ? (projectToken, terminalToken) : (terminalToken, projectToken);
-        bool zeroForOne = terminalToken == token0;
-
-        // sqrtP in Q96 from the TWAP tick
-        uint160 sqrtP = TickMath.getSqrtPriceAtTick(arithmeticMeanTick);
-
-        // If the sqrtP is 0, there's no valid price so we'll return the maximum slippage tolerance.
-        if (sqrtP == 0) return TWAP_SLIPPAGE_DENOMINATOR;
-
-        // Approximate % of range liquidity consumed by the swap (in bps)
-        // Multiply by 10 to to amplify the results and prevent results on the low end from rounding to zero.
-        uint256 base = FullMath.mulDiv(amountIn, 10 * TWAP_SLIPPAGE_DENOMINATOR, uint256(liquidity));
-
-        // Stage 1 — raw estimate (bps), normalized by √P
-        uint256 rawSlippageBps = zeroForOne
-            ? FullMath.mulDiv(base, uint256(sqrtP), uint256(1) << 96)
-            : FullMath.mulDiv(base, uint256(1) << 96, uint256(sqrtP));
-
-        // Stage 2 — policy adjustment: map raw → adjusted using log scaling and caps
-        // Higher rawSlippageBps (lower liquidity) = MORE protection. Lower rawSlippageBps = LESS protection.
-        if (rawSlippageBps == 0) return UNCERTAIN_TWAP_SLIPPAGE_TOLERANCE;
-
-        // Cap very large values at reasonable maximum
-        // Ensure maxAllowed never exceeds TWAP_SLIPPAGE_DENOMINATOR (100%)
-        uint256 maxAllowed = rawSlippageBps > 15 * TWAP_SLIPPAGE_DENOMINATOR
-            ? TWAP_SLIPPAGE_DENOMINATOR * 88 / 100
-            : (rawSlippageBps > 10 * TWAP_SLIPPAGE_DENOMINATOR
-                    ? TWAP_SLIPPAGE_DENOMINATOR * 67 / 100
-                    : rawSlippageBps / 5); // Default max: 20% of input
-
-        // Cap maxAllowed at 100% (safety check)
-        //@note maybe this should be capped at 99%? Or even 95%?
-        if (maxAllowed > TWAP_SLIPPAGE_DENOMINATOR) {
-            maxAllowed = TWAP_SLIPPAGE_DENOMINATOR;
-        }
-
-        // Logarithmic scaling: Use log2 to create smooth growth with diminishing returns
-        // Formula: adjusted grows logarithmically with rawSlippageBps
-        // Scale rawSlippageBps to UD60x18 format (multiply by 1e18 to satisfy log2 requirement of x >= UNIT)
-        uint256 scaledValue = rawSlippageBps * 1e18;
-        if (scaledValue < 1e18) scaledValue = 1e18; // Ensure >= UNIT for log2
-
-        UD60x18 logValue = log2(UD60x18.wrap(scaledValue));
-
-        // Unwrap logValue - it's in UD60x18 format where 1 = 1e18
-        // Divide by 1e18 to get the actual log2 value
-        uint256 logApprox = UD60x18.unwrap(logValue) / 1e18;
-
-        // Base value: minimum slippage protection (for very small raw/high liquidity)
-        uint256 baseValue = UNCERTAIN_TWAP_SLIPPAGE_TOLERANCE;
-
-        // Scale factor: how much the log value contributes to the result
-        // Higher scaleFactor = steeper curve (more sensitive to liquidity changes)
-        uint256 scaleFactor = 800; // Adjusts the steepness of the logarithmic curve
-
-        // Calculate adjusted: base + logarithmic growth
-        // Higher raw (low liquidity) → larger logApprox → larger adjusted (more protection)
-        // Lower raw (high liquidity) → smaller logApprox → smaller adjusted (less protection)
-        uint256 adjustedSlippageBps = baseValue + (scaleFactor * logApprox) / 2;
-
-        // Cap at reasonable maximum to prevent excessive slippage protection (maxAllowed already capped at 100%)
-        if (adjustedSlippageBps > maxAllowed) adjustedSlippageBps = maxAllowed;
-
-        // For very small raw (high liquidity), ensure minimum sensible protection
-        if (rawSlippageBps < 500 && adjustedSlippageBps < baseValue + 100) {
-            adjustedSlippageBps = baseValue + (rawSlippageBps / 5);
-        }
-
-        return adjustedSlippageBps;
-    }
 
     /// @notice Calculates time-weighted means of tick and liquidity for a given Uniswap V3 pool
     /// @param pool The pool that we want to observe
@@ -996,11 +908,25 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
     ///      - Uses TWAP oracles for price estimates (prevents manipulation)
     ///      - Validates terminal existence before routing through Juicebox
     ///      - Validates V3 pool existence and unlock status before routing
-    function _beforeSwap(address, PoolKey calldata key, SwapParams calldata params, bytes calldata)
+    function _beforeSwap(address, PoolKey calldata key, SwapParams calldata params, bytes calldata hookData)
         internal
         override
         returns (bytes4, BeforeSwapDelta, uint24)
     {
+        // Decode user-specified slippage tolerance from hook data (in basis points, 10000 = 100%)
+        // REQUIRED: User must pass slippage tolerance in hookData as a uint256 (32 bytes)
+        uint256 slippageToleranceBps;
+        if (hookData.length == 32) {
+            uint256 decoded = abi.decode(hookData, (uint256));
+            // Validate slippage tolerance is within bounds
+            if (decoded > TWAP_SLIPPAGE_DENOMINATOR) {
+                revert("Slippage tolerance exceeds maximum");
+            }
+            slippageToleranceBps = decoded;
+        } else {
+            // If hookData is empty or not 32 bytes, revert (slippage is required)
+            revert("Slippage tolerance required in hookData");
+        }
         PoolId poolId = key.toId();
 
         // Only support exact-input swaps (amountSpecified < 0)
@@ -1035,10 +961,10 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
 
         if (isBuyingJBToken) {
             // Buying JB tokens: compare Juicebox vs Uniswap for getting JB tokens
-            juiceboxExpectedOutput = calculateExpectedTokensWithCurrency(projectId, tokenIn, amountIn);
+            juiceboxExpectedOutput = calculateExpectedTokensWithCurrency(projectId, tokenIn, amountIn, slippageToleranceBps);
         } else if (isSellingJBToken) {
             // Selling JB tokens: compare Juicebox vs Uniswap for getting output tokens
-            juiceboxExpectedOutput = calculateExpectedOutputFromSelling(projectId, amountIn, tokenOut);
+            juiceboxExpectedOutput = calculateExpectedOutputFromSelling(projectId, amountIn, tokenOut, slippageToleranceBps);
         } else {
             // No JB token involved, proceed with normal Uniswap swap
             emit RouteSelected(poolId, false, 0);
@@ -1046,7 +972,7 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
         }
 
         // Calculate how many tokens we'd get from Uniswap v4
-        uint256 uniswapV4ExpectedTokens = estimateUniswapOutput(poolId, key, amountIn, params.zeroForOne);
+        uint256 uniswapV4ExpectedTokens = estimateUniswapOutput(poolId, key, amountIn, params.zeroForOne, slippageToleranceBps);
 
         // Calculate how many tokens we'd get from Uniswap v3 (10000 fee tier only)
         // v3 pools use WETH, not address(0), so convert native ETH to WETH for v3 operations
@@ -1055,7 +981,7 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
         // Determine v3 swap direction based on token ordering (v3 uses token0 < token1)
         (address v3Token0, address v3Token1, bool v3ZeroForOne) = _getTokenOrdering(v3TokenIn, v3TokenOut);
         uint256 uniswapV3ExpectedTokens;
-        try this.estimateUniswapV3Output(v3Token0, v3Token1, amountIn, v3ZeroForOne) returns (uint256 tokens) {
+        try this.estimateUniswapV3Output(v3Token0, v3Token1, amountIn, v3ZeroForOne, slippageToleranceBps) returns (uint256 tokens) {
             uniswapV3ExpectedTokens = tokens;
         } catch {
             uniswapV3ExpectedTokens = 0;
@@ -1138,7 +1064,6 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
     /// @param amountIn The input amount
     /// @param isBuying Whether we're buying (true) or selling (false) JB tokens
     /// @param terminal The Juicebox terminal to use (must be valid and have code)
-    /// @return outputReceived The amount of output tokens received
     /// 
     /// @custom:security This function:
     ///      - Validates terminal exists and has code before calling

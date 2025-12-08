@@ -42,12 +42,12 @@ contract JuiceboxSwapRouter {
     /// @param key The pool key
     /// @param params The swap parameters
     /// @return delta The balance delta from the swap
-    function swap(PoolKey memory key, SwapParams memory params) external payable returns (BalanceDelta delta) {
+    function swap(PoolKey memory key, SwapParams memory params, uint256 slippageToleranceBps) external payable returns (BalanceDelta delta) {
         // Set msgSender for hooks to query
         _msgSender = msg.sender;
 
-        // Encode router address in hookData so hook can call msgSender() on it
-        bytes memory hookData = abi.encode(address(this));
+        // Encode slippage tolerance in hookData (required parameter)
+        bytes memory hookData = abi.encode(slippageToleranceBps);
 
         delta =
             abi.decode(poolManager.unlock(abi.encode(CallbackData(msg.sender, key, params, hookData))), (BalanceDelta));

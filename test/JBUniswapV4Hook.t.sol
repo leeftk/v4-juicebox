@@ -741,7 +741,7 @@ contract JuiceboxHookTest is Test {
         SwapParams memory params =
             SwapParams({zeroForOne: false, amountSpecified: -1 ether, sqrtPriceLimitX96: TickMath.MAX_SQRT_PRICE - 1});
 
-        jbSwapRouter.swap(key, params);
+        jbSwapRouter.swap(key, params, 100); // 1% slippage
 
         // Swap should have executed successfully (project ID is detected dynamically, no cache needed)
     }
@@ -763,7 +763,7 @@ contract JuiceboxHookTest is Test {
         SwapParams memory params =
             SwapParams({zeroForOne: false, amountSpecified: -1 ether, sqrtPriceLimitX96: TickMath.MAX_SQRT_PRICE - 1});
 
-        jbSwapRouter.swap(key, params);
+        jbSwapRouter.swap(key, params, 100); // 1% slippage
 
         // Check final balances
         uint256 finalToken0 = token0.balanceOf(address(this));
@@ -794,7 +794,7 @@ contract JuiceboxHookTest is Test {
 
     // Helper function to expose calculateExpectedTokens for testing
     function calculateExpectedTokensExternal(uint256 projectId, uint256 ethAmount) external view returns (uint256) {
-        return hook.calculateExpectedTokensWithCurrency(projectId, address(0), ethAmount);
+        return hook.calculateExpectedTokensWithCurrency(projectId, address(0), ethAmount, 0);
     }
 
     /// Given token1 is set as ETH currency with currency ID 1
@@ -803,7 +803,7 @@ contract JuiceboxHookTest is Test {
     function testCalculateExpectedTokensWithCurrency() public {
         // Test calculation with token1 as payment currency
         // The price is already set up in setUp() via mockJBPrices
-        uint256 expectedTokens = hook.calculateExpectedTokensWithCurrency(123, address(token1), 1 ether);
+        uint256 expectedTokens = hook.calculateExpectedTokensWithCurrency(123, address(token1), 1 ether, 0);
 
         // With 1:1 price (which is the default without price feed), we expect similar output
         assertGt(expectedTokens, 0, "Should calculate expected tokens");
@@ -855,7 +855,7 @@ contract JuiceboxHookTest is Test {
         SwapParams memory params =
             SwapParams({zeroForOne: true, amountSpecified: -1 ether, sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1});
 
-        swapRouter.swap(nonJBKey, params, PoolSwapTest.TestSettings(false, false), ZERO_BYTES);
+        swapRouter.swap(nonJBKey, params, PoolSwapTest.TestSettings(false, false), abi.encode(uint256(100))); // 1% slippage
 
         // Mock terminal should not have been called
         assertEq(mockJBMultiTerminal.lastProjectId(), 0, "Project ID should still be 0");
@@ -933,7 +933,7 @@ contract JuiceboxHookTest is Test {
         uint256 amountIn = 1 ether;
 
         // Estimate output for token0 -> token1 swap
-        uint256 estimatedOut = hook.estimateUniswapOutput(id, key, amountIn, true);
+        uint256 estimatedOut = hook.estimateUniswapOutput(id, key, amountIn, true, 0);
 
         assertGt(estimatedOut, 0, "Should estimate positive output");
         assertLt(estimatedOut, amountIn, "Output should account for fees and be less than 1:1");
@@ -954,7 +954,7 @@ contract JuiceboxHookTest is Test {
         SwapParams memory params =
             SwapParams({zeroForOne: false, amountSpecified: -1 ether, sqrtPriceLimitX96: TickMath.MAX_SQRT_PRICE - 1});
 
-        jbSwapRouter.swap(key, params);
+        jbSwapRouter.swap(key, params, 100); // 1% slippage
 
         // Swap should have executed successfully (project ID is detected dynamically, no cache needed)
     }
@@ -999,7 +999,7 @@ contract JuiceboxHookTest is Test {
         SwapParams memory params =
             SwapParams({zeroForOne: false, amountSpecified: -1 ether, sqrtPriceLimitX96: TickMath.MAX_SQRT_PRICE - 1});
 
-        jbSwapRouter.swap(key, params);
+        jbSwapRouter.swap(key, params, 100); // 1% slippage
 
         // Check that observation was recorded
         (uint16 newIndex,,) = hook.states(id);
@@ -1026,7 +1026,7 @@ contract JuiceboxHookTest is Test {
         SwapParams memory params =
             SwapParams({zeroForOne: false, amountSpecified: -1 ether, sqrtPriceLimitX96: TickMath.MAX_SQRT_PRICE - 1});
 
-        jbSwapRouter.swap(key, params);
+        jbSwapRouter.swap(key, params, 100); // 1% slippage
 
         // Check that cardinality has grown (must be strictly greater than initial)
         (, uint16 newCardinality,) = hook.states(id);
@@ -1039,7 +1039,7 @@ contract JuiceboxHookTest is Test {
     function testTWAPFallbackToSpot() public view {
         // For a newly initialized pool with only one observation,
         // TWAP should fallback to spot price
-        uint256 estimatedOut = hook.estimateUniswapOutput(id, key, 1 ether, true);
+        uint256 estimatedOut = hook.estimateUniswapOutput(id, key, 1 ether, true, 0);
 
         assertGt(estimatedOut, 0, "Should fallback to spot price and return positive value");
     }
@@ -1050,7 +1050,7 @@ contract JuiceboxHookTest is Test {
     /// And the result should be greater than 0
     function testTWAPWithMultipleObservations() public view {
         // With only initial observation, estimate should use spot price fallback
-        uint256 estimatedOut = hook.estimateUniswapOutput(id, key, 1 ether, true);
+        uint256 estimatedOut = hook.estimateUniswapOutput(id, key, 1 ether, true, 0);
 
         // Verify the fallback works
         assertGt(estimatedOut, 0, "Should get positive estimate via fallback to spot");
@@ -1157,7 +1157,7 @@ contract JuiceboxHookTest is Test {
 
         // Estimate output - may fail for extreme edge cases in simplified calculation
         // In production, a more robust swap math implementation would handle these
-        try hook.estimateUniswapOutput(fuzzId, fuzzKey, amountIn, true) returns (uint256 estimatedOut) {
+        try hook.estimateUniswapOutput(fuzzId, fuzzKey, amountIn, true, 0) returns (uint256 estimatedOut) {
             // Output should be non-zero for successful calculations
             assertGt(estimatedOut, 0, "Estimated output should be positive");
         } catch {
@@ -1185,7 +1185,7 @@ contract JuiceboxHookTest is Test {
             zeroForOne: false, amountSpecified: -int256(_amountIn), sqrtPriceLimitX96: TickMath.MAX_SQRT_PRICE - 1
         });
 
-        jbSwapRouter.swap(key, params);
+        jbSwapRouter.swap(key, params, 100); // 1% slippage
 
         // Assert that the project token (token0) balance increased
         uint256 finalToken0 = token0.balanceOf(address(this));
@@ -1217,7 +1217,7 @@ contract JuiceboxHookTest is Test {
             zeroForOne: false, amountSpecified: -int256(_amountIn), sqrtPriceLimitX96: TickMath.MAX_SQRT_PRICE - 1
         });
 
-        jbSwapRouter.swap(key, params);
+        jbSwapRouter.swap(key, params, 100); // 1% slippage
 
         // Assert that the project token (token0) balance increased
         uint256 finalToken0 = token0.balanceOf(address(this));
@@ -1239,7 +1239,7 @@ contract JuiceboxHookTest is Test {
         mockJBController.setWeight(123, weight);
 
         // Test with NATIVE_ETH
-        uint256 expectedTokens = hook.calculateExpectedTokensWithCurrency(123, address(0), paymentAmount);
+        uint256 expectedTokens = hook.calculateExpectedTokensWithCurrency(123, address(0), paymentAmount, 0);
 
         // Should match simple calculation for ETH
         uint256 calculated = (weight * paymentAmount) / 1e18;
@@ -1257,7 +1257,7 @@ contract JuiceboxHookTest is Test {
         mockJBController.setWeight(123, weight);
         mockJBController.setReservedPercent(123, reservedPercent);
 
-        uint256 expectedTokens = hook.calculateExpectedTokensWithCurrency(123, address(0), paymentAmount);
+        uint256 expectedTokens = hook.calculateExpectedTokensWithCurrency(123, address(0), paymentAmount, 0);
 
         // Theoretical tokens = (weight * paymentAmount) / 1e18 = (1000e18 * 1e18) / 1e18 = 1000e18
         uint256 theoreticalTokens = (weight * paymentAmount) / 1e18;
@@ -1280,7 +1280,7 @@ contract JuiceboxHookTest is Test {
         mockJBController.setWeight(123, weight);
         mockJBController.setReservedPercent(123, reservedPercent);
 
-        uint256 expectedTokens = hook.calculateExpectedTokensWithCurrency(123, address(0), paymentAmount);
+        uint256 expectedTokens = hook.calculateExpectedTokensWithCurrency(123, address(0), paymentAmount, 0);
 
         // Theoretical tokens = (weight * paymentAmount) / 1e18 = (10000e18 * 1e18) / 1e18 = 10000e18
         uint256 theoreticalTokens = (weight * paymentAmount) / 1e18;
@@ -1309,7 +1309,7 @@ contract JuiceboxHookTest is Test {
 
         // Calculate expected tokens for 2 ether of token1
         // Expected: (1000e18 * 2e18 * 0.5e18) / (1e18 * 1e18) = 1000e18
-        uint256 expectedTokens = hook.calculateExpectedTokensWithCurrency(123, address(token1), 2 ether);
+        uint256 expectedTokens = hook.calculateExpectedTokensWithCurrency(123, address(token1), 2 ether, 0);
 
         // Manual calculation using FullMath to match the hook's logic
         uint256 intermediate = FullMath.mulDiv(1000e18, 2 ether, 1e18);
@@ -1332,7 +1332,7 @@ contract JuiceboxHookTest is Test {
         assertEq(expectedTokens, 0, "Expected tokens should be 0 with zero weight");
 
         // Also test with currency
-        uint256 expectedTokensWithCurrency = hook.calculateExpectedTokensWithCurrency(123, address(0), amount);
+        uint256 expectedTokensWithCurrency = hook.calculateExpectedTokensWithCurrency(123, address(0), amount, 0);
         assertEq(expectedTokensWithCurrency, 0, "Expected tokens should be 0 with zero weight for currency");
 
         // Reset weight
@@ -1364,7 +1364,7 @@ contract JuiceboxHookTest is Test {
         // Test _getTokenDecimals() indirectly via calculateExpectedTokensWithCurrency
         // Pay with 1 USDC (1e6 units)
         uint256 usdcAmount = 1e6; // 1 USDC
-        uint256 expectedTokens = hook.calculateExpectedTokensWithCurrency(projectId, address(usdc), usdcAmount);
+        uint256 expectedTokens = hook.calculateExpectedTokensWithCurrency(projectId, address(usdc), usdcAmount, 0);
 
         // Expected calculation:
         // 1. Normalize USDC to 18 decimals: 1e6 * 1e18 / 1e6 = 1e18
@@ -1380,7 +1380,7 @@ contract JuiceboxHookTest is Test {
         mockJBPrices.setPricePerUnitOf(projectId, baseCurrency, usdcCurrencyId, 1e18);
 
         // Recalculate with correct price
-        expectedTokens = hook.calculateExpectedTokensWithCurrency(projectId, address(usdc), usdcAmount);
+        expectedTokens = hook.calculateExpectedTokensWithCurrency(projectId, address(usdc), usdcAmount, 0);
 
         // Manual calculation:
         // paymentAmount18 = 1e6 * 1e18 / 1e6 = 1e18
@@ -1410,7 +1410,7 @@ contract JuiceboxHookTest is Test {
 
         // Pay with 0.1 WBTC (0.1 * 1e8 = 1e7 units)
         uint256 wbtcAmount = 1e7; // 0.1 WBTC
-        uint256 expectedTokens = hook.calculateExpectedTokensWithCurrency(projectId, address(wbtc), wbtcAmount);
+        uint256 expectedTokens = hook.calculateExpectedTokensWithCurrency(projectId, address(wbtc), wbtcAmount, 0);
 
         // Manual calculation:
         // paymentAmount18 = 1e7 * 1e18 / 1e8 = 1e17
@@ -1438,7 +1438,7 @@ contract JuiceboxHookTest is Test {
 
         // Pay with 1000 tokens (1000 units, since 0 decimals)
         uint256 tokenAmount = 1000;
-        uint256 expectedTokens = hook.calculateExpectedTokensWithCurrency(projectId, address(zeroDecToken), tokenAmount);
+        uint256 expectedTokens = hook.calculateExpectedTokensWithCurrency(projectId, address(zeroDecToken), tokenAmount, 0);
 
         // Manual calculation:
         // paymentAmount18 = 1000 * 1e18 / 1 = 1000e18
@@ -1484,7 +1484,7 @@ contract JuiceboxHookTest is Test {
 
         // Pay with 1 unit of token (1 * 10^decimals)
         uint256 tokenAmount = 10 ** decimals;
-        uint256 expectedTokens = hook.calculateExpectedTokensWithCurrency(projectId, address(testToken), tokenAmount);
+        uint256 expectedTokens = hook.calculateExpectedTokensWithCurrency(projectId, address(testToken), tokenAmount, 0);
 
         // Should receive approximately 1000 tokens regardless of decimal places
         // (normalization should handle the conversion)
@@ -1539,7 +1539,7 @@ contract JuiceboxHookTest is Test {
         amount = bound(amount, 0.01 ether, 100 ether);
 
         // With only initial observation, estimate should use spot price fallback
-        uint256 estimatedOut = hook.estimateUniswapOutput(id, key, amount, true);
+        uint256 estimatedOut = hook.estimateUniswapOutput(id, key, amount, true, 0);
 
         // Verify the fallback works
         assertGt(estimatedOut, 0, "Should get positive estimate via fallback to spot");
@@ -1567,7 +1567,7 @@ contract JuiceboxHookTest is Test {
                 zeroForOne: false, amountSpecified: -int256(swapAmount), sqrtPriceLimitX96: TickMath.MAX_SQRT_PRICE - 1
             });
 
-            try swapRouter.swap(key, params, PoolSwapTest.TestSettings(false, false), ZERO_BYTES) {
+            try swapRouter.swap(key, params, PoolSwapTest.TestSettings(false, false), abi.encode(uint256(100))) { // 1% slippage
             // Swap succeeded
             }
             catch {
@@ -1613,7 +1613,7 @@ contract JuiceboxHookTest is Test {
                 zeroForOne: false, amountSpecified: -0.05 ether, sqrtPriceLimitX96: TickMath.MAX_SQRT_PRICE - 1
             });
 
-            swapRouter.swap(key, params, PoolSwapTest.TestSettings(false, false), ZERO_BYTES);
+            swapRouter.swap(key, params, PoolSwapTest.TestSettings(false, false), abi.encode(uint256(100))); // 1% slippage
         }
 
         // Wait for TWAP period
@@ -1629,10 +1629,10 @@ contract JuiceboxHookTest is Test {
             sqrtPriceLimitX96: TickMath.MAX_SQRT_PRICE - 1
         });
 
-        swapRouter.swap(key, manipulationParams, PoolSwapTest.TestSettings(false, false), ZERO_BYTES);
+        swapRouter.swap(key, manipulationParams, PoolSwapTest.TestSettings(false, false), abi.encode(uint256(100))); // 1% slippage
 
         // Calculate what TWAP says (should be less affected)
-        uint256 twapEstimateAfterManipulation = hook.estimateUniswapOutput(id, key, normalAmount, true);
+        uint256 twapEstimateAfterManipulation = hook.estimateUniswapOutput(id, key, normalAmount, true, 0);
 
         // TWAP should still provide estimate
         assertTrue(twapEstimateAfterManipulation > 0, "TWAP should still provide estimate");
@@ -1656,8 +1656,8 @@ contract JuiceboxHookTest is Test {
         mockJBPrices.setPricePerUnitOf(123, token1CurrencyId, baseCurrency, ethPerToken1);
 
         // Calculate expected tokens from both routes
-        uint256 jbExpectedTokens = hook.calculateExpectedTokensWithCurrency(123, address(token1), swapAmount);
-        uint256 uniswapExpectedTokens = hook.estimateUniswapOutput(id, key, swapAmount, false);
+        uint256 jbExpectedTokens = hook.calculateExpectedTokensWithCurrency(123, address(token1), swapAmount, 0);
+        uint256 uniswapExpectedTokens = hook.estimateUniswapOutput(id, key, swapAmount, false, 0);
 
         // Mint and approve for swap
         token1.mint(address(this), swapAmount);
@@ -1671,7 +1671,7 @@ contract JuiceboxHookTest is Test {
         // Record events to verify routing decision
         vm.recordLogs();
 
-        try swapRouter.swap(key, params, PoolSwapTest.TestSettings(false, false), ZERO_BYTES) {
+        try swapRouter.swap(key, params, PoolSwapTest.TestSettings(false, false), abi.encode(uint256(100))) { // 1% slippage
         // The hook should have detected when Juicebox is better
         // NOTE: Actual Juicebox routing is disabled in this version due to architectural constraints
         // The fix to the delta calculation is still correct (line 526 in JBUniswapV4Hook.sol)
@@ -1717,14 +1717,14 @@ contract JuiceboxHookTest is Test {
             SwapParams memory buildParams = SwapParams({
                 zeroForOne: false, amountSpecified: -0.05 ether, sqrtPriceLimitX96: TickMath.MAX_SQRT_PRICE - 1
             });
-            swapRouter.swap(key, buildParams, PoolSwapTest.TestSettings(false, false), ZERO_BYTES);
+            swapRouter.swap(key, buildParams, PoolSwapTest.TestSettings(false, false), abi.encode(uint256(100))); // 1% slippage
         }
 
         // Wait for TWAP to stabilize
         vm.warp(block.timestamp + 1800);
 
         // Record victim's expected outcome using TWAP
-        uint256 victimExpectedWithTWAP = hook.estimateUniswapOutput(id, key, victimSwapAmount, false);
+        uint256 victimExpectedWithTWAP = hook.estimateUniswapOutput(id, key, victimSwapAmount, false, 0);
 
         // Attacker front-runs: manipulate price
         address attacker = address(0xBEEF);
@@ -1739,11 +1739,11 @@ contract JuiceboxHookTest is Test {
             sqrtPriceLimitX96: TickMath.MAX_SQRT_PRICE - 1
         });
 
-        swapRouter.swap(key, attackParams, PoolSwapTest.TestSettings(false, false), ZERO_BYTES);
+        swapRouter.swap(key, attackParams, PoolSwapTest.TestSettings(false, false), abi.encode(uint256(100))); // 1% slippage
         vm.stopPrank();
 
         // The hook uses TWAP for estimation, which should be less affected by the attack
-        uint256 victimExpectedAfterAttack = hook.estimateUniswapOutput(id, key, victimSwapAmount, false);
+        uint256 victimExpectedAfterAttack = hook.estimateUniswapOutput(id, key, victimSwapAmount, false, 0);
 
         // TWAP-based estimate should not change dramatically from the attack
         uint256 actualDeviation = victimExpectedWithTWAP > victimExpectedAfterAttack
@@ -1776,10 +1776,10 @@ contract JuiceboxHookTest is Test {
                 zeroForOne: false, amountSpecified: -0.05 ether, sqrtPriceLimitX96: TickMath.MAX_SQRT_PRICE - 1
             });
 
-            try swapRouter.swap(key, params, PoolSwapTest.TestSettings(false, false), ZERO_BYTES) {
+            try swapRouter.swap(key, params, PoolSwapTest.TestSettings(false, false), abi.encode(uint256(100))) { // 1% slippage
                 successfulSwaps++;
                 // Try to get TWAP estimate
-                try hook.estimateUniswapOutput(id, key, 0.5 ether, true) returns (uint256 estimate) {
+                try hook.estimateUniswapOutput(id, key, 0.5 ether, true, 0) returns (uint256 estimate) {
                     if (i < estimates.length) {
                         estimates[i] = estimate;
                     }
@@ -1818,7 +1818,7 @@ contract JuiceboxHookTest is Test {
             zeroForOne: false, amountSpecified: -0.5 ether, sqrtPriceLimitX96: TickMath.MAX_SQRT_PRICE - 1
         });
 
-        try swapRouter.swap(key, params1, PoolSwapTest.TestSettings(false, false), ZERO_BYTES) {
+            try swapRouter.swap(key, params1, PoolSwapTest.TestSettings(false, false), abi.encode(uint256(100))) { // 1% slippage
             // Wait first time gap
             vm.warp(block.timestamp + timeGap1);
 
@@ -1830,12 +1830,12 @@ contract JuiceboxHookTest is Test {
                 zeroForOne: false, amountSpecified: -0.25 ether, sqrtPriceLimitX96: TickMath.MAX_SQRT_PRICE - 1
             });
 
-            try swapRouter.swap(key, params2, PoolSwapTest.TestSettings(false, false), ZERO_BYTES) {
+            try swapRouter.swap(key, params2, PoolSwapTest.TestSettings(false, false), abi.encode(uint256(100))) { // 1% slippage
                 // Wait second time gap
                 vm.warp(block.timestamp + timeGap2);
 
                 // Get TWAP estimate
-                uint256 twapEstimate = hook.estimateUniswapOutput(id, key, 0.5 ether, true);
+                uint256 twapEstimate = hook.estimateUniswapOutput(id, key, 0.5 ether, true, 0);
 
                 // TWAP should work if enough time and observations exist
                 if (timeGap1 + timeGap2 >= 1800) {
@@ -1868,7 +1868,7 @@ contract JuiceboxHookTest is Test {
             SwapParams memory params = SwapParams({
                 zeroForOne: false, amountSpecified: -0.05 ether, sqrtPriceLimitX96: TickMath.MAX_SQRT_PRICE - 1
             });
-            try swapRouter.swap(key, params, PoolSwapTest.TestSettings(false, false), ZERO_BYTES) {} catch {}
+            try swapRouter.swap(key, params, PoolSwapTest.TestSettings(false, false), abi.encode(uint256(100))) {} catch {} // 1% slippage
         }
 
         // Try extreme swap (may fail due to slippage/liquidity)
@@ -1881,9 +1881,9 @@ contract JuiceboxHookTest is Test {
             sqrtPriceLimitX96: TickMath.MAX_SQRT_PRICE - 1
         });
 
-        try swapRouter.swap(key, extremeParams, PoolSwapTest.TestSettings(false, false), ZERO_BYTES) {
+        try swapRouter.swap(key, extremeParams, PoolSwapTest.TestSettings(false, false), abi.encode(uint256(100))) { // 1% slippage
             // If swap succeeds, TWAP should still work
-            uint256 twapEstimate = hook.estimateUniswapOutput(id, key, 1 ether, true);
+            uint256 twapEstimate = hook.estimateUniswapOutput(id, key, 1 ether, true, 0);
             assertGt(twapEstimate, 0, "TWAP should work after extreme swap");
         } catch {
             // Swap may fail due to slippage - this is expected for extreme amounts
@@ -1919,7 +1919,7 @@ contract JuiceboxHookTest is Test {
         SwapParams memory params =
             SwapParams({zeroForOne: true, amountSpecified: -1 ether, sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1});
 
-        jbSwapRouter.swap(key, params);
+        jbSwapRouter.swap(key, params, 100); // 1% slippage
 
         // Check final balances
         uint256 finalToken0 = token0.balanceOf(address(this));
@@ -1954,7 +1954,7 @@ contract JuiceboxHookTest is Test {
             zeroForOne: true, amountSpecified: -int256(sellAmount), sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1
         });
 
-        try jbSwapRouter.swap(key, params) {
+        try jbSwapRouter.swap(key, params, 100) { // 1% slippage
             // User should have received token1
             uint256 finalToken1 = token1.balanceOf(address(this));
             uint256 token1Received = finalToken1 - initialToken1;
@@ -1984,7 +1984,7 @@ contract JuiceboxHookTest is Test {
         SwapParams memory params =
             SwapParams({zeroForOne: true, amountSpecified: -1 ether, sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1});
 
-        jbSwapRouter.swap(key, params);
+        jbSwapRouter.swap(key, params, 100); // 1% slippage
 
         // Check final balances
         uint256 finalToken0 = token0.balanceOf(address(this));
@@ -2021,7 +2021,7 @@ contract JuiceboxHookTest is Test {
         SwapParams memory params =
             SwapParams({zeroForOne: true, amountSpecified: -1 ether, sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1});
 
-        jbSwapRouter.swap(key, params);
+        jbSwapRouter.swap(key, params, 100); // 1% slippage
 
         // Check final balances
         uint256 finalToken0 = token0.balanceOf(address(this));
@@ -2057,7 +2057,7 @@ contract JuiceboxHookTest is Test {
         SwapParams memory buyParams =
             SwapParams({zeroForOne: false, amountSpecified: -1 ether, sqrtPriceLimitX96: TickMath.MAX_SQRT_PRICE - 1});
 
-        jbSwapRouter.swap(key, buyParams);
+        jbSwapRouter.swap(key, buyParams, 100); // 1% slippage
 
         // Verify Juicebox was called for buying
         assertEq(mockJBMultiTerminal.lastProjectId(), 123, "Should have called Juicebox for buying");
@@ -2072,7 +2072,7 @@ contract JuiceboxHookTest is Test {
             zeroForOne: true, amountSpecified: -int256(sellAmount), sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1
         });
 
-        jbSwapRouter.swap(key, sellParams);
+        jbSwapRouter.swap(key, sellParams, 100); // 1% slippage
 
         // The hook should have detected selling and compared prices
         // The routing decision depends on which gives better output
@@ -2100,7 +2100,7 @@ contract JuiceboxHookTest is Test {
             zeroForOne: true, amountSpecified: -int256(sellAmount), sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1
         });
 
-        try jbSwapRouter.swap(key, params) {
+        try jbSwapRouter.swap(key, params, 100) { // 1% slippage
             // User should have received token1
             uint256 finalToken1 = token1.balanceOf(address(this));
             uint256 token1Received = finalToken1 - initialToken1;
@@ -2120,7 +2120,7 @@ contract JuiceboxHookTest is Test {
         mockJBTerminalStore.setSurplus(123, address(token1), 0.5 ether);
 
         // Calculate expected output from selling 1 ether of JB tokens
-        uint256 expectedOutput = hook.calculateExpectedOutputFromSelling(123, 1 ether, address(token1));
+        uint256 expectedOutput = hook.calculateExpectedOutputFromSelling(123, 1 ether, address(token1), 0);
 
         // Should return positive value
         assertGt(expectedOutput, 0, "Should calculate positive expected output");
@@ -2141,7 +2141,7 @@ contract JuiceboxHookTest is Test {
         mockJBTerminalStore.setSurplus(123, address(token1), surplusAmount);
 
         // Calculate expected output
-        uint256 expectedOutput = hook.calculateExpectedOutputFromSelling(123, tokenAmount, address(token1));
+        uint256 expectedOutput = hook.calculateExpectedOutputFromSelling(123, tokenAmount, address(token1), 0);
 
         // Should return positive value
         assertGt(expectedOutput, 0, "Should calculate positive expected output");
@@ -2183,7 +2183,7 @@ contract JuiceboxHookTest is Test {
         SwapParams memory params =
             SwapParams({zeroForOne: true, amountSpecified: -1 ether, sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1});
 
-        jbSwapRouter.swap(key, params);
+        jbSwapRouter.swap(key, params, 100); // 1% slippage
 
         // Verify v3 swap was called
         assertTrue(mockV3Pool.swapCalled(), "V3 swap should have been called");
@@ -2227,7 +2227,7 @@ contract JuiceboxHookTest is Test {
         SwapParams memory params =
             SwapParams({zeroForOne: true, amountSpecified: -1 ether, sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1});
 
-        jbSwapRouter.swap(key, params);
+        jbSwapRouter.swap(key, params, 100); // 1% slippage
 
         // Verify v3 swap was called even with small difference
         assertTrue(mockV3Pool.swapCalled(), "V3 swap should have been called even with small price difference");
@@ -2250,7 +2250,7 @@ contract JuiceboxHookTest is Test {
         SwapParams memory params =
             SwapParams({zeroForOne: true, amountSpecified: -1 ether, sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1});
 
-        jbSwapRouter.swap(key, params);
+        jbSwapRouter.swap(key, params, 100); // 1% slippage
 
         // Verify v3 swap was NOT called
         assertFalse(mockV3Pool.swapCalled(), "V3 swap should NOT have been called when v4 is cheaper");
@@ -2299,7 +2299,7 @@ contract JuiceboxHookTest is Test {
         SwapParams memory params =
             SwapParams({zeroForOne: false, amountSpecified: -1 ether, sqrtPriceLimitX96: TickMath.MAX_SQRT_PRICE - 1});
 
-        jbSwapRouter.swap(key, params);
+        jbSwapRouter.swap(key, params, 100); // 1% slippage
 
         // Verify v3 swap was called
         assertTrue(mockV3Pool.swapCalled(), "V3 swap should have been called for reverse direction");
@@ -2334,7 +2334,7 @@ contract JuiceboxHookTest is Test {
             zeroForOne: true, amountSpecified: -int256(amountIn), sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1
         });
 
-        jbSwapRouter.swap(key, params);
+        jbSwapRouter.swap(key, params, 100); // 1% slippage
 
         // The hook's actual routing decision (v3 vs v4) accounts for:
         // - TWAP calculations
@@ -2373,7 +2373,7 @@ contract JuiceboxHookTest is Test {
         SwapParams memory params =
             SwapParams({zeroForOne: true, amountSpecified: -1 ether, sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1});
 
-        jbSwapRouter.swap(key, params);
+        jbSwapRouter.swap(key, params, 100); // 1% slippage
 
         // When prices are equal, v4 should be preferred (v3 not called)
         // Note: This depends on the implementation, but typically equal prices = use v4
@@ -2435,11 +2435,12 @@ contract JuiceboxHookTest is Test {
 
         // The hook should convert address(0) to WETH internally
         // So we test with WETH directly (which is what happens internally)
-        uint256 estimatedOut = nativeETHHook.estimateUniswapV3Output(
+        uint256 estimatedOut =         nativeETHHook.estimateUniswapV3Output(
             address(mockWETH), // WETH (converted from address(0))
             address(token1),
             amountIn,
-            true // zeroForOne: WETH -> token1
+            true, // zeroForOne: WETH -> token1
+            100 // slippageToleranceBps: 1% slippage
         );
 
         // Should return a positive estimate (proving it found the WETH/token1 pool)
@@ -2523,7 +2524,7 @@ contract JuiceboxHookTest is Test {
             SwapParams({zeroForOne: true, amountSpecified: -1 ether, sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1});
 
         // Should not revert - should fall back to v4
-        nativeSwapRouter.swap{value: 1 ether}(nativeKey, params);
+        nativeSwapRouter.swap{value: 1 ether}(nativeKey, params, 100); // 1% slippage
 
         // Test passes if no revert (v3 estimation returns 0, falls back to v4)
     }
