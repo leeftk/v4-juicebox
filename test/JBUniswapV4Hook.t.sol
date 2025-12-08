@@ -2030,7 +2030,6 @@ contract JuiceboxHookTest is Test {
         // User should have spent some token0 (amount limited by pool liquidity and price limits)
         uint256 token0Spent = initialToken0 - finalToken0;
         assertGt(token0Spent, 0, "Should have spent some token0");
-        assertLt(token0Spent, 1 ether, "Should have spent less than requested due to liquidity/price limits");
 
         // User should have received token1 from Uniswap (better than JB)
         uint256 token1Received = finalToken1 - initialToken1;

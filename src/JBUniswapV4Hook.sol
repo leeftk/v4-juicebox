@@ -380,7 +380,7 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
             estimatedOut = estimatedOut - FullMath.mulDiv(estimatedOut, key.fee, 1000000);
         }
 
-        // Apply user-specified slippage tolerance (required parameter)
+        // Apply slippage tolerance
         uint256 slippageAmount = FullMath.mulDiv(estimatedOut, slippageToleranceBps, TWAP_SLIPPAGE_DENOMINATOR);
         if (slippageAmount < estimatedOut) {
             estimatedOut -= slippageAmount;
@@ -428,35 +428,30 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
     }
 
     /// @notice Estimate expected output tokens from a Uniswap v3 swap using TWAP
-    /// @dev Uses sophisticated TWAP calculation with slippage protection
     /// @param token0 First token in the pair
     /// @param token1 Second token in the pair
     /// @param amountIn The input amount
     /// @param zeroForOne Whether swapping token0 for token1
+    /// @param slippageToleranceBps User-specified slippage tolerance in basis points (10000 = 100%)
     /// @return estimatedOut The estimated output amount
     function estimateUniswapV3Output(address token0, address token1, uint256 amountIn, bool zeroForOne, uint256 slippageToleranceBps)
         external
         view
         returns (uint256 estimatedOut)
     {
-        // Use _getQuote which handles the factory call internally
-        // For _getQuote: (projectToken, amountIn, terminalToken) -> amountOut
-        // When zeroForOne=true: swapping token0->token1, so token0 is input, token1 is output
-        //   We want: how many token1 do we get for token0? So projectToken=token1, terminalToken=token0
-        // When zeroForOne=false: swapping token1->token0, so token1 is input, token0 is output
-        //   We want: how many token0 do we get for token1? So projectToken=token0, terminalToken=token1
+        // Determine input/output tokens based on swap direction
         address inputToken = zeroForOne ? token0 : token1;
         address outputToken = zeroForOne ? token1 : token0;
         estimatedOut = _getQuote(outputToken, amountIn, inputToken, slippageToleranceBps);
         return estimatedOut;
     }
 
-    /// @notice Get a quote based on the TWAP, using the standard TWAP window and slippage tolerance.
-    /// @param projectToken The token being received (quote token).
-    /// @param amountIn The number of terminal tokens being used to swap.
-    /// @param terminalToken The token being paid in (base token).
-    /// @param slippageToleranceBps User-specified slippage tolerance in basis points. If 0, uses automatic calculation.
-    /// @return amountOut The minimum number of tokens to receive based on the TWAP and its params.
+    /// @notice Get a quote based on the TWAP with user-specified slippage tolerance
+    /// @param projectToken The token being received (quote token)
+    /// @param amountIn The number of terminal tokens being used to swap
+    /// @param terminalToken The token being paid in (base token)
+    /// @param slippageToleranceBps User-specified slippage tolerance in basis points (10000 = 100%)
+    /// @return amountOut The minimum number of tokens to receive after applying slippage
     function _getQuote(address projectToken, uint256 amountIn, address terminalToken, uint256 slippageToleranceBps)
         internal
         view
@@ -523,21 +518,16 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
         // If there's no liquidity, return an empty quote.
         if (liquidity == 0) return 0;
 
-        // Use user-specified slippage tolerance (required parameter)
-        uint256 slippageTolerance = slippageToleranceBps;
-
-        // If the slippage tolerance is at or above the maximum, return an empty quote.
-        if (slippageTolerance >= TWAP_SLIPPAGE_DENOMINATOR) return 0;
+        // Validate slippage tolerance
+        if (slippageToleranceBps >= TWAP_SLIPPAGE_DENOMINATOR) return 0;
 
         // Get a quote based on this TWAP tick.
         amountOut = _getQuoteAtTick({
             tick: arithmeticMeanTick, baseAmount: uint128(amountIn), baseToken: terminalToken, quoteToken: projectToken
         });
 
-        // return the lowest acceptable return based on the TWAP and its parameters.
-        // Ensure slippageTolerance doesn't exceed denominator to prevent underflow
-        uint256 slippageAmount = (amountOut * slippageTolerance) / TWAP_SLIPPAGE_DENOMINATOR;
-        // Safety check: ensure we don't subtract more than amountOut
+        // Apply slippage tolerance to get minimum acceptable return
+        uint256 slippageAmount = (amountOut * slippageToleranceBps) / TWAP_SLIPPAGE_DENOMINATOR;
         if (slippageAmount > amountOut) {
             return 0;
         }
@@ -887,44 +877,28 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
         return (BaseHook.afterRemoveLiquidity.selector, BalanceDelta.wrap(0));
     }
 
-    /// @notice Hook called before a swap
-    /// @dev Compares prices between Uniswap and Juicebox, routes to cheaper option
-    /// @notice Main routing logic that compares prices across V4, V3, and Juicebox routes
-    /// @dev This function is called by Uniswap V4 before every swap. It:
-    ///      1. Validates exact-input swap (reverts on exact-output)
-    ///      2. Detects if swap involves a Juicebox project token
-    ///      3. Calculates expected outputs from all three routes (V4, V3, Juicebox)
-    ///      4. Compares outputs and routes to the best option
-    ///      5. Returns swap delta to override V4 swap if routing elsewhere
-    /// 
+    /// @notice Routes swaps to the best option among V4, V3, and Juicebox
+    /// @dev Compares expected outputs and routes to the option with highest output
     /// @param key The pool key identifying the V4 pool
     /// @param params The swap parameters (direction, amount, price limit)
+    /// @param hookData Must contain slippage tolerance as uint256 (10000 = 100%)
     /// @return selector The function selector (BaseHook.beforeSwap.selector)
     /// @return delta The swap delta (zero for V4, custom for V3/Juicebox routing)
-    /// @return protocolFee The protocol fee (always 0, handled by PoolManager)
-    /// 
-    /// @custom:security This function:
-    ///      - Only supports exact-input swaps (prevents exact-output manipulation)
-    ///      - Uses TWAP oracles for price estimates (prevents manipulation)
-    ///      - Validates terminal existence before routing through Juicebox
-    ///      - Validates V3 pool existence and unlock status before routing
+    /// @return protocolFee The protocol fee (always 0)
     function _beforeSwap(address, PoolKey calldata key, SwapParams calldata params, bytes calldata hookData)
         internal
         override
         returns (bytes4, BeforeSwapDelta, uint24)
     {
-        // Decode user-specified slippage tolerance from hook data (in basis points, 10000 = 100%)
-        // REQUIRED: User must pass slippage tolerance in hookData as a uint256 (32 bytes)
+        // Decode slippage tolerance from hookData (required: uint256, 10000 = 100%)
         uint256 slippageToleranceBps;
         if (hookData.length == 32) {
             uint256 decoded = abi.decode(hookData, (uint256));
-            // Validate slippage tolerance is within bounds
             if (decoded > TWAP_SLIPPAGE_DENOMINATOR) {
                 revert("Slippage tolerance exceeds maximum");
             }
             slippageToleranceBps = decoded;
         } else {
-            // If hookData is empty or not 32 bytes, revert (slippage is required)
             revert("Slippage tolerance required in hookData");
         }
         PoolId poolId = key.toId();
@@ -974,8 +948,7 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
         // Calculate how many tokens we'd get from Uniswap v4
         uint256 uniswapV4ExpectedTokens = estimateUniswapOutput(poolId, key, amountIn, params.zeroForOne, slippageToleranceBps);
 
-        // Calculate how many tokens we'd get from Uniswap v3 (10000 fee tier only)
-        // v3 pools use WETH, not address(0), so convert native ETH to WETH for v3 operations
+        // Calculate expected output from Uniswap v3 (convert native ETH to WETH for v3)
         address v3TokenIn = _convertToV3Token(tokenIn);
         address v3TokenOut = _convertToV3Token(tokenOut);
         // Determine v3 swap direction based on token ordering (v3 uses token0 < token1)
@@ -1032,16 +1005,13 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
             // Log the expected amount for the chosen route
             emit RouteSelected(poolId, false, uniswapV3ExpectedTokens);
 
-            // Execute v3 swap (pass pre-calculated token ordering with WETH mapping)
-            // Note: v3Token0 and v3Token1 already have address(0) converted to WETH
             uint256 outputReceived =
                 _routeThroughV3(v3Token0, v3Token1, amountIn, v3ZeroForOne, tokenIn, tokenOut);
 
-            // Return delta that reflects what hook did
             return (BaseHook.beforeSwap.selector, _createSwapDelta(amountIn, outputReceived), 0);
         }
 
-        // Proceed with normal v4 swap (RouteSelected already logs expected V4 amount)
+        // Proceed with normal v4 swap
         emit RouteSelected(poolId, false, uniswapV4ExpectedTokens);
         return (BaseHook.beforeSwap.selector, BeforeSwapDeltaLibrary.ZERO_DELTA, 0);
     }
