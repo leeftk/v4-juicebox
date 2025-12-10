@@ -1654,5 +1654,172 @@ contract JBUniswapV4HookForkTest is Test {
         // and would be triggered if a pool had cardinality 0
         assertTrue(true, "_getOldestObservationSecondsAgo error exists for zero cardinality");
     }
+
+    // ============================================
+    // SLIPPAGE PROTECTION TESTS
+    // ============================================
+
+    /// @notice Test that V4 swap succeeds when output >= amountOutMin
+    /// @dev Verifies slippage protection allows swaps that meet minimum output
+    function testFork_SlippageProtection_V4Swap_Success() public {
+        // Setup: Ensure pool has liquidity and user has tokens
+        address user = testUser;
+        vm.startPrank(user);
+
+        uint256 amountIn = 1 ether;
+        
+        // Approve WETH (currency1) for swap (user already has WETH from setup)
+        IERC20(WETH).approve(address(jbSwapRouter), amountIn);
+
+        // Swap currency1 (WETH) -> currency0 (NANA), so zeroForOne = false
+        SwapParams memory params = SwapParams({
+            zeroForOne: false,
+            amountSpecified: -int256(amountIn),
+            sqrtPriceLimitX96: TickMath.MAX_SQRT_PRICE - 1
+        });
+
+        // Estimate expected output
+        uint256 expectedOut = hook.estimateUniswapOutput(id, key, amountIn, params.zeroForOne);
+        require(expectedOut > 0, "Expected output should be positive");
+
+        // Set amountOutMin to 90% of expected (should pass)
+        uint256 amountOutMin = (expectedOut * 90) / 100;
+
+        // Should succeed
+        jbSwapRouter.swap(key, params, amountOutMin);
+
+        vm.stopPrank();
+    }
+
+    /// @notice Test that V4 swap reverts when output < amountOutMin
+    /// @dev Verifies slippage protection blocks swaps that don't meet minimum output
+    function testFork_SlippageProtection_V4Swap_Reverts() public {
+        // Setup: Ensure pool has liquidity and user has tokens
+        address user = testUser;
+        vm.startPrank(user);
+
+        uint256 amountIn = 1 ether;
+        
+        // Approve WETH (currency1) for swap (user already has WETH from setup)
+        IERC20(WETH).approve(address(jbSwapRouter), amountIn);
+
+        // Swap currency1 (WETH) -> currency0 (NANA), so zeroForOne = false
+        SwapParams memory params = SwapParams({
+            zeroForOne: false,
+            amountSpecified: -int256(amountIn),
+            sqrtPriceLimitX96: TickMath.MAX_SQRT_PRICE - 1
+        });
+
+        // Estimate expected output
+        uint256 expectedOut = hook.estimateUniswapOutput(id, key, amountIn, params.zeroForOne);
+        require(expectedOut > 0, "Expected output should be positive");
+
+        // Set amountOutMin to 110% of expected (should fail)
+        uint256 amountOutMin = (expectedOut * 110) / 100;
+
+        // Should revert - the error gets wrapped by PoolManager as WrappedError,
+        // but the underlying error is JBUniswapV4Hook_InsufficientOutput
+        // We verify the revert happens (slippage protection works)
+        vm.expectRevert();
+        jbSwapRouter.swap(key, params, amountOutMin);
+
+        vm.stopPrank();
+    }
+
+    /// @notice Test that V3 swap reverts when output < amountOutMin
+    /// @dev Verifies slippage protection blocks V3 routed swaps that don't meet minimum output
+    /// @dev Note: This test will skip if V3 pool doesn't exist or V3 isn't the best route
+    ///      This is expected behavior for fork tests
+    function testFork_SlippageProtection_V3Swap_Reverts() public {
+        // Require an actual v3 pool for NANA/WETH at 1% fee; skip if absent
+        address v3Pool = IUniswapV3Factory(MAINNET_V3_FACTORY).getPool(WETH, NANA, 10000);
+        if (v3Pool == address(0)) {
+            vm.skip(true); // Skip test if v3 pool doesn't exist
+        }
+
+        address user = testUser;
+        vm.startPrank(user);
+
+        // Setup: Make V3 better than V4 by manipulating V4 price
+        // Add liquidity to V4 pool first
+        IERC20(NANA).approve(address(modifyLiquidityRouter), type(uint256).max);
+        IERC20(WETH).approve(address(modifyLiquidityRouter), type(uint256).max);
+        IERC20(WETH).approve(address(jbSwapRouter), type(uint256).max);
+        IERC20(WETH).approve(address(swapRouter), type(uint256).max);
+
+        modifyLiquidityRouter.modifyLiquidity(
+            key,
+            ModifyLiquidityParams({tickLower: -120, tickUpper: 120, liquidityDelta: 150 ether, salt: bytes32(0)}),
+            ZERO_BYTES
+        );
+
+        // Make v4 price worse for WETH->NANA by doing a large WETH->NANA swap
+        SwapParams memory pushUpNANAPrice = SwapParams({
+            zeroForOne: false, amountSpecified: -int256(5000 ether), sqrtPriceLimitX96: TickMath.MAX_SQRT_PRICE - 1
+        });
+        try swapRouter.swap(key, pushUpNANAPrice, PoolSwapTest.TestSettings(false, false), abi.encode(uint256(100))) {} catch {} // 1% slippage
+
+        // Now estimate outputs for comparison
+        uint256 amountIn = 1 ether;
+        
+        // Estimate V3 output
+        uint256 v3ExpectedOut = 0;
+        try hook.estimateUniswapV3Output(WETH, NANA, amountIn, false) returns (uint256 o) {
+            v3ExpectedOut = o;
+        } catch {}
+        
+        // Verify V3 estimation succeeded
+        if (v3ExpectedOut == 0) {
+            vm.skip(true); // Skip if V3 estimation fails
+        }
+
+        // Estimate V4 output for comparison
+        uint256 v4ExpectedOut = hook.estimateUniswapOutput(id, key, amountIn, false);
+        
+        // Estimate JB output for comparison
+        uint256 jbOut = 0;
+        uint256 projectId = IJBTokens(MAINNET_JB_TOKENS).projectIdOf(IJBToken(NANA));
+        if (projectId != 0) {
+            try hook.calculateExpectedTokensWithCurrency(projectId, WETH, amountIn) returns (uint256 o) {
+                jbOut = o;
+            } catch {}
+        }
+
+        // Verify V3 would be chosen (better than V4)
+        // Note: The hook routes to V3 if v3BetterThanV4 && v3ExpectedOut > 0
+        // We also need to ensure JB doesn't beat V3, or V3 will still route if better than V4
+        bool v3BetterThanV4 = v3ExpectedOut > v4ExpectedOut;
+        
+        if (!v3BetterThanV4) {
+            vm.skip(true); // Skip if V3 isn't better than V4 (won't route through V3)
+        }
+        
+        // If JB is better than V3, the hook will route through JB instead
+        // So we need V3 to be the best option for this test
+        if (jbOut > v3ExpectedOut) {
+            vm.skip(true); // Skip if JB is better than V3 (hook will route through JB, not V3)
+        }
+
+        // Set amountOutMin to 150% of expected V3 output (definitely too high)
+        // The actual V3 swap will return less than this due to fees and slippage,
+        // triggering slippage protection in _beforeSwap
+        uint256 amountOutMin = (v3ExpectedOut * 150) / 100;
+        
+        // Ensure amountOutMin is reasonable (not zero)
+        require(amountOutMin > 0, "amountOutMin should be positive");
+
+        SwapParams memory params = SwapParams({
+            zeroForOne: false,
+            amountSpecified: -int256(amountIn),
+            sqrtPriceLimitX96: TickMath.MAX_SQRT_PRICE - 1
+        });
+
+        // Should revert - V3 slippage protection is enforced in _beforeSwap
+        // The error gets wrapped by PoolManager, but the underlying error is InsufficientOutput
+        vm.expectRevert();
+        jbSwapRouter.swap(key, params, amountOutMin);
+
+        vm.stopPrank();
+    }
 }
 
