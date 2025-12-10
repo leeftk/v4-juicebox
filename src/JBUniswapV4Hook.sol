@@ -999,6 +999,15 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
         return (BaseHook.beforeSwap.selector, BeforeSwapDeltaLibrary.ZERO_DELTA, 0);
     }
 
+    /// @notice Routes a swap through Juicebox terminal instead of Uniswap
+    /// @param projectId The Juicebox project ID
+    /// @param inputCurrency The input currency (native ETH or ERC20)
+    /// @param outputCurrency The output currency (native ETH or ERC20)
+    /// @param amountIn The input amount
+    /// @param isBuying Whether we're buying (true) or selling (false) JB tokens
+    /// @param terminal The Juicebox terminal to use
+    /// @param amountOutMin Minimum tokens user accepts (enforced by JB terminal)
+    /// @return outputReceived The amount of output tokens received
     function _routeThroughJuicebox(
         uint256 projectId,
         Currency inputCurrency,
@@ -1062,7 +1071,14 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
         return outputReceived;
     }
 
-   
+    /// @notice Routes a swap through Uniswap V3 pool when it offers better prices than V4
+    /// @param token0 First token in pair (must be < token1, already converted to WETH if native ETH)
+    /// @param token1 Second token in pair (already converted to WETH if native ETH)
+    /// @param amountIn The input amount
+    /// @param zeroForOne Swap direction (true = token0 → token1)
+    /// @param originalTokenIn Original input token (may be native ETH)
+    /// @param originalTokenOut Original output token (may be native ETH)
+    /// @return outputReceived The amount of output tokens received
     function _routeThroughV3(
         address token0,
         address token1,
@@ -1130,7 +1146,10 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
         return outputReceived;
     }
 
-   
+    /// @notice Callback for Uniswap v3 swaps to pay for the swap
+    /// @param amount0Delta The amount of token0 that must be paid (positive) or received (negative)
+    /// @param amount1Delta The amount of token1 that must be paid (positive) or received (negative)
+    /// @param data Additional data containing pool info (token0, token1, fee) for validation
     function uniswapV3SwapCallback(int256 amount0Delta, int256 amount1Delta, bytes calldata data) external override {
         if (amount0Delta <= 0 && amount1Delta <= 0) revert JBUniswapV4Hook_NoSwap();
 
