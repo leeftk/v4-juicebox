@@ -971,13 +971,9 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
             emit RouteSelected(poolId, true, juiceboxExpectedOutput);
 
             // Execute Juicebox routing (works for both buying and selling)
+            // JB terminal enforces amountOutMin internally via minReturnedTokens/minTokensReclaimed
             uint256 outputReceived =
                 _routeThroughJuicebox(projectId, inputCurrency, outputCurrency, amountIn, isBuyingJBToken, jbTerminal, amountOutMin);
-
-            // Enforce amountOutMin guarantee
-            if (outputReceived < amountOutMin) {
-                revert("Output below minimum");
-            }
 
             return (BaseHook.beforeSwap.selector, _createSwapDelta(amountIn, outputReceived), 0);
         }
@@ -1003,39 +999,6 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
         return (BaseHook.beforeSwap.selector, BeforeSwapDeltaLibrary.ZERO_DELTA, 0);
     }
 
-    /// @notice Routes a swap through Juicebox terminal instead of Uniswap
-    /// @dev This function handles both buying and selling Juicebox project tokens:
-    ///      - Buying: Calls terminal.pay() to mint tokens
-    ///      - Selling: Calls terminal.cashOutTokensOf() to redeem tokens
-    /// 
-    ///      The function:
-    ///      1. Takes input tokens from PoolManager
-    ///      2. Normalizes tokens (native ETH → JB_NATIVE_TOKEN)
-    ///      3. Approves terminal if needed (ERC20 tokens)
-    ///      4. Executes Juicebox operation (pay or cashOutTokensOf)
-    ///      5. Settles output back to PoolManager
-    /// 
-    /// @param projectId The Juicebox project ID
-    /// @param inputCurrency The input currency (native ETH or ERC20)
-    /// @param outputCurrency The output currency (native ETH or ERC20)
-    /// @param amountIn The input amount
-    /// @param isBuying Whether we're buying (true) or selling (false) JB tokens
-    /// @param terminal The Juicebox terminal to use (must be valid and have code)
-    /// 
-    /// @custom:security This function:
-    ///      - Validates terminal exists and has code before calling
-    ///      - Uses SafeERC20 for token transfers
-    ///      - Handles native ETH properly (wrapping/unwrapping not needed for JB)
-    ///      - Settles output back to PoolManager (prevents token loss)
-    /// @notice Routes a swap through Juicebox instead of Uniswap
-    /// @dev Handles both buying and selling JB tokens through Juicebox
-    /// @param projectId The Juicebox project ID
-    /// @param inputCurrency The input currency (what the swapper is paying)
-    /// @param outputCurrency The output currency (what the swapper receives)
-    /// @param amountIn The amount of input tokens
-    /// @param isBuying Whether we're buying JB tokens (true) or selling them (false)
-    /// @param terminal The Juicebox terminal to use (already validated by caller)
-    /// @return outputReceived The amount of output tokens received
     function _routeThroughJuicebox(
         uint256 projectId,
         Currency inputCurrency,
@@ -1099,38 +1062,7 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
         return outputReceived;
     }
 
-    /// @notice Routes a swap through Uniswap v3 instead of v4
-    /// @dev Takes input tokens from PoolManager, executes v3 swap, settles output tokens back
-    /// @dev Handles wrapping/unwrapping ETH↔WETH since v3 uses WETH but v4 can use native ETH
-    /// @param token0 The v3 token0 address (token0 < token1, already converted to WETH if needed)
-    /// @param token1 The v3 token1 address (token0 < token1, already converted to WETH if needed)
-    /// @param amountIn The amount of input tokens
-    /// @param zeroForOne Whether swapping token0 for token1
-    /// @param originalTokenIn The original tokenIn from v4 (may be address(0) for native ETH)
-    /// @param originalTokenOut The original tokenOut from v4 (may be address(0) for native ETH)
-    /// @notice Routes a swap through Uniswap V3 pool when it offers better prices than V4
-    /// @dev This function:
-    ///      1. Looks up V3 pool via factory (10000 fee tier only)
-    ///      2. Validates pool exists and is unlocked
-    ///      3. Wraps native ETH to WETH if input is native ETH
-    ///      4. Executes V3 swap (calls uniswapV3SwapCallback during execution)
-    ///      5. Unwraps WETH to native ETH if output is native ETH
-    ///      6. Settles output back to PoolManager
-    /// 
-    /// @param token0 First token in pair (must be < token1, already converted to WETH if native ETH)
-    /// @param token1 Second token in pair (already converted to WETH if native ETH)
-    /// @param amountIn The input amount
-    /// @param zeroForOne Swap direction (true = token0 → token1)
-    /// @param originalTokenIn Original input token (may be native ETH)
-    /// @param originalTokenOut Original output token (may be native ETH)
-    /// @return outputReceived The amount of output tokens received
-    /// 
-    /// @custom:security This function:
-    ///      - Validates V3 pool exists (reverts if not found)
-    ///      - Validates pool is unlocked (reverts if locked)
-    ///      - Uses WETH for V3 operations (V3 doesn't support native ETH)
-    ///      - Validates callback via uniswapV3SwapCallback()
-    ///      - Settles output back to PoolManager (prevents token loss)
+   
     function _routeThroughV3(
         address token0,
         address token1,
@@ -1198,27 +1130,7 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
         return outputReceived;
     }
 
-    /// @notice Callback for Uniswap v3 swaps
-    /// @dev Called by the v3 pool during swap execution to request payment. This function:
-    ///      1. Validates at least one delta is positive (actual swap occurred)
-    ///      2. Decodes pool info from data (token0, token1, fee)
-    ///      3. Validates caller is a legitimate V3 pool from factory
-    ///      4. Determines which token to pay (the one with positive delta)
-    ///      5. Transfers required amount to the pool
-    /// 
-    /// @param amount0Delta The amount of token0 that must be paid (positive) or received (negative)
-    /// @param amount1Delta The amount of token1 that must be paid (positive) or received (negative)
-    /// @param data Additional data containing pool info (token0, token1, fee) for validation
-    /// 
-    /// @custom:security This function is critical for security:
-    ///      - Validates swap occurred (at least one delta > 0)
-    ///      - Validates caller is legitimate V3 pool (via factory lookup)
-    ///      - Validates pool exists (not address(0))
-    ///      - Uses SafeERC20 for token transfers
-    ///      - Tokens should already be in contract from take() call in _routeThroughV3()
-    /// 
-    /// @custom:invariant msg.sender must be a valid V3 pool from V3_FACTORY
-    /// @custom:invariant At least one delta must be positive (swap must have occurred)
+   
     function uniswapV3SwapCallback(int256 amount0Delta, int256 amount1Delta, bytes calldata data) external override {
         if (amount0Delta <= 0 && amount1Delta <= 0) revert JBUniswapV4Hook_NoSwap();
 

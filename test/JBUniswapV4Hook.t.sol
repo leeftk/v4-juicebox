@@ -116,6 +116,12 @@ contract MockJBMultiTerminal {
     // Reference to terminal store for surplus calculations
     MockJBTerminalStore public TERMINAL_STORE;
 
+    // Override return amounts for testing
+    uint256 public overridePayReturnAmount;
+    uint256 public overrideCashOutReturnAmount;
+    bool public useOverridePayReturn;
+    bool public useOverrideCashOutReturn;
+
     function setProjectToken(uint256 projectId, address projectToken) external {
         projectTokens[projectId] = projectToken;
     }
@@ -124,12 +130,27 @@ contract MockJBMultiTerminal {
         TERMINAL_STORE = MockJBTerminalStore(terminalStore);
     }
 
+    function setPayReturnAmount(uint256 amount) external {
+        overridePayReturnAmount = amount;
+        useOverridePayReturn = true;
+    }
+
+    function setCashOutReturnAmount(uint256 amount) external {
+        overrideCashOutReturnAmount = amount;
+        useOverrideCashOutReturn = true;
+    }
+
+    function resetOverrides() external {
+        useOverridePayReturn = false;
+        useOverrideCashOutReturn = false;
+    }
+
     function pay(
         uint256 projectId,
         address token,
         uint256 amount,
         address beneficiary,
-        uint256, /* minReturnedTokens */
+        uint256 minReturnedTokens, /* minReturnedTokens */
         string calldata, /* memo */
         bytes calldata /* metadata */
     ) external payable returns (uint256 beneficiaryTokenCount) {
@@ -139,7 +160,15 @@ contract MockJBMultiTerminal {
         lastBeneficiary = beneficiary;
 
         // Mock: return 1000 tokens per ETH (or per input token at 1:1 for simplicity)
-        beneficiaryTokenCount = amount * 1000;
+        // Or use override if set
+        if (useOverridePayReturn) {
+            beneficiaryTokenCount = overridePayReturnAmount;
+        } else {
+            beneficiaryTokenCount = amount * 1000;
+        }
+
+        // Enforce minReturnedTokens (JB terminal behavior)
+        require(beneficiaryTokenCount >= minReturnedTokens, "Insufficient tokens returned");
 
         // Actually mint the project tokens to the beneficiary
         address projectToken = projectTokens[projectId];
@@ -155,7 +184,7 @@ contract MockJBMultiTerminal {
         uint256 projectId,
         uint256 cashOutCount,
         address tokenToReclaim,
-        uint256, /* minTokensReclaimed */
+        uint256 minTokensReclaimed, /* minTokensReclaimed */
         address payable beneficiary,
         bytes calldata /* metadata */
     ) external returns (uint256) {
@@ -164,11 +193,20 @@ contract MockJBMultiTerminal {
         lastAmount = cashOutCount;
         lastBeneficiary = beneficiary;
 
-        // Mock cash out: return the surplus amount proportional to the cash out count
-        uint256 surplusAmount =
-            TERMINAL_STORE.currentReclaimableSurplusOf(projectId, 1 ether, uint32(uint160(tokenToReclaim)), 18);
+        uint256 outputAmount;
+        
+        // Use override if set, otherwise calculate from surplus
+        if (useOverrideCashOutReturn) {
+            outputAmount = overrideCashOutReturnAmount;
+        } else {
+            // Mock cash out: return the surplus amount proportional to the cash out count
+            uint256 surplusAmount =
+                TERMINAL_STORE.currentReclaimableSurplusOf(projectId, 1 ether, uint32(uint160(tokenToReclaim)), 18);
+            outputAmount = (surplusAmount * cashOutCount) / 1e18;
+        }
 
-        uint256 outputAmount = (surplusAmount * cashOutCount) / 1e18;
+        // Enforce minTokensReclaimed (JB terminal behavior)
+        require(outputAmount >= minTokensReclaimed, "Insufficient tokens reclaimed");
 
         if (outputAmount > 0) {
             MockERC20(tokenToReclaim).mint(beneficiary, outputAmount);
@@ -2522,8 +2560,176 @@ contract JuiceboxHookTest is Test {
             SwapParams({zeroForOne: true, amountSpecified: -1 ether, sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1});
 
         // Should not revert - should fall back to v4
-        nativeSwapRouter.swap{value: 1 ether}(nativeKey, params, 100); // 1% slippage
+        nativeSwapRouter.swap{value: 1 ether}(nativeKey, params, 0); // amountOutMin = 0 (no protection)
 
         // Test passes if no revert (v3 estimation returns 0, falls back to v4)
     }
+
+    // ============================================
+    // amountOutMin Tests
+    // ============================================
+
+    /// @notice Test that swap succeeds when output >= amountOutMin for JB route
+    function testAmountOutMin_JB_Success() public {
+        // Setup: User wants to buy JB tokens with amountOutMin = 500 (less than expected 1000)
+        token1.mint(address(this), 1 ether);
+        token1.approve(address(jbSwapRouter), 1 ether);
+
+        SwapParams memory params =
+            SwapParams({zeroForOne: false, amountSpecified: -1 ether, sqrtPriceLimitX96: TickMath.MAX_SQRT_PRICE - 1});
+
+        uint256 initialToken0 = token0.balanceOf(address(this));
+        
+        // Swap with amountOutMin = 500 (should succeed since we get 1000)
+        jbSwapRouter.swap(key, params, 500 ether);
+
+        uint256 finalToken0 = token0.balanceOf(address(this));
+        uint256 token0Received = finalToken0 - initialToken0;
+        
+        // Should have received 1000 tokens (more than the 500 minimum)
+        assertEq(token0Received, 1000 ether, "Should receive 1000 tokens");
+        assertGe(token0Received, 500 ether, "Should meet minimum requirement");
+    }
+
+    /// @notice Test that swap fails when output < amountOutMin for JB route
+    function testAmountOutMin_JB_Failure() public {
+        // Setup: User wants to buy JB tokens with amountOutMin = 1500 (more than expected 1000)
+        token1.mint(address(this), 1 ether);
+        token1.approve(address(jbSwapRouter), 1 ether);
+
+        SwapParams memory params =
+            SwapParams({zeroForOne: false, amountSpecified: -1 ether, sqrtPriceLimitX96: TickMath.MAX_SQRT_PRICE - 1});
+
+        // Swap with amountOutMin = 1500 (should fail since we only get 1000)
+        // The JB terminal enforces minReturnedTokens, so it will revert first
+        // The error message from JB terminal is "Insufficient tokens returned"
+        vm.expectRevert();
+        jbSwapRouter.swap(key, params, 1500 ether);
+    }
+
+    /// @notice Test that swap succeeds when output >= amountOutMin for V4 route
+    function testAmountOutMin_V4_Success() public {
+        // Setup: Create a non-JB pool for v4 routing (token0 < token1, so token0 is currency0)
+        // We'll swap token1 -> token0
+        PoolKey memory nonJBKey = PoolKey({
+            currency0: Currency.wrap(address(token0)),
+            currency1: Currency.wrap(address(token1)),
+            fee: 3000,
+            tickSpacing: 60,
+            hooks: IHooks(address(0))
+        });
+        PoolId nonJBId = nonJBKey.toId();
+
+        // Initialize the pool first
+        manager.initialize(nonJBKey, SQRT_PRICE_1_1);
+
+        // Add liquidity to the pool
+        token0.mint(address(this), 100 ether);
+        token1.mint(address(this), 100 ether);
+        token0.approve(address(modifyLiquidityRouter), 100 ether);
+        token1.approve(address(modifyLiquidityRouter), 100 ether);
+
+        modifyLiquidityRouter.modifyLiquidity(
+            nonJBKey,
+            ModifyLiquidityParams({tickLower: -60, tickUpper: 60, liquidityDelta: 10 ether, salt: bytes32(0)}),
+            ZERO_BYTES
+        );
+
+        // Move time forward for TWAP
+        vm.warp(block.timestamp + 10000);
+
+        // Estimate expected output (swapping token1 for token0, so zeroForOne = false)
+        uint256 expectedOut = hook.estimateUniswapOutput(nonJBId, nonJBKey, 1 ether, false);
+        assertGt(expectedOut, 0, "Should have positive output");
+
+        // Prepare swap
+        token1.mint(address(this), 1 ether);
+        token1.approve(address(jbSwapRouter), 1 ether);
+
+        SwapParams memory params =
+            SwapParams({zeroForOne: false, amountSpecified: -1 ether, sqrtPriceLimitX96: TickMath.MAX_SQRT_PRICE - 1});
+
+        uint256 initialToken0 = token0.balanceOf(address(this));
+
+        // Swap with amountOutMin = 0 (no protection) to test that the swap works
+        // The actual amountOutMin enforcement is tested in testAmountOutMin_V4_Failure
+        jbSwapRouter.swap(nonJBKey, params, 0);
+
+        uint256 finalToken0 = token0.balanceOf(address(this));
+        uint256 token0Received = finalToken0 - initialToken0;
+
+        // Should have received some tokens
+        assertGt(token0Received, 0, "Should receive some tokens");
+    }
+
+    /// @notice Test that swap fails when output < amountOutMin for V4 route
+    function testAmountOutMin_V4_Failure() public {
+        // Setup: Create a non-JB pool for v4 routing
+        PoolKey memory nonJBKey = PoolKey({
+            currency0: Currency.wrap(address(token0)),
+            currency1: Currency.wrap(address(token1)),
+            fee: 3000,
+            tickSpacing: 60,
+            hooks: IHooks(address(0))
+        });
+        PoolId nonJBId = nonJBKey.toId();
+
+        // Initialize the pool first
+        manager.initialize(nonJBKey, SQRT_PRICE_1_1);
+
+        // Add liquidity to the pool
+        token0.mint(address(this), 100 ether);
+        token1.mint(address(this), 100 ether);
+        token0.approve(address(modifyLiquidityRouter), 100 ether);
+        token1.approve(address(modifyLiquidityRouter), 100 ether);
+
+        modifyLiquidityRouter.modifyLiquidity(
+            nonJBKey,
+            ModifyLiquidityParams({tickLower: -60, tickUpper: 60, liquidityDelta: 10 ether, salt: bytes32(0)}),
+            ZERO_BYTES
+        );
+
+        // Move time forward for TWAP
+        vm.warp(block.timestamp + 10000);
+
+        // Estimate expected output
+        uint256 expectedOut = hook.estimateUniswapOutput(nonJBId, nonJBKey, 1 ether, false);
+        assertGt(expectedOut, 0, "Should have positive output");
+
+        // Prepare swap
+        token1.mint(address(this), 1 ether);
+        token1.approve(address(jbSwapRouter), 1 ether);
+
+        SwapParams memory params =
+            SwapParams({zeroForOne: false, amountSpecified: -1 ether, sqrtPriceLimitX96: TickMath.MAX_SQRT_PRICE - 1});
+
+        // Swap with amountOutMin more than expected (should fail)
+        uint256 amountOutMin = expectedOut * 150 / 100; // 150% of expected (impossible)
+        
+        vm.expectRevert("Output below minimum");
+        jbSwapRouter.swap(nonJBKey, params, amountOutMin);
+    }
+
+    /// @notice Test that amountOutMin = 0 always passes (no protection)
+    function testAmountOutMin_Zero_AlwaysPasses() public {
+        // Setup
+        token1.mint(address(this), 1 ether);
+        token1.approve(address(jbSwapRouter), 1 ether);
+
+        SwapParams memory params =
+            SwapParams({zeroForOne: false, amountSpecified: -1 ether, sqrtPriceLimitX96: TickMath.MAX_SQRT_PRICE - 1});
+
+        uint256 initialToken0 = token0.balanceOf(address(this));
+
+        // Swap with amountOutMin = 0 (should always succeed)
+        jbSwapRouter.swap(key, params, 0);
+
+        uint256 finalToken0 = token0.balanceOf(address(this));
+        uint256 token0Received = finalToken0 - initialToken0;
+
+        // Should have received tokens
+        assertGt(token0Received, 0, "Should receive tokens");
+        assertEq(token0Received, 1000 ether, "Should receive expected amount");
+    }
+
 }
