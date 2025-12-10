@@ -12,7 +12,7 @@ import {
     BeforeSwapDeltaLibrary,
     toBeforeSwapDelta
 } from "@uniswap/v4-core/src/types/BeforeSwapDelta.sol";
-import {BalanceDelta} from "@uniswap/v4-core/src/types/BalanceDelta.sol";
+import {BalanceDelta, BalanceDeltaLibrary} from "@uniswap/v4-core/src/types/BalanceDelta.sol";
 import {Currency} from "@uniswap/v4-core/src/types/Currency.sol";
 import {SwapParams, ModifyLiquidityParams} from "@uniswap/v4-core/src/types/PoolOperation.sol";
 import {StateLibrary} from "@uniswap/v4-core/src/libraries/StateLibrary.sol";
@@ -23,11 +23,9 @@ import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IER
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 
-// WETH interface for wrapping/unwrapping
-interface IWETH9 {
-    function deposit() external payable;
-    function withdraw(uint256) external;
-}
+// Import WETH interface
+import {IWETH} from "./interfaces/IWETH.sol";
+
 // Uniswap v3 interfaces
 import {IUniswapV3Factory} from "./interfaces/IUniswapV3Factory.sol";
 import {IUniswapV3Pool} from "./interfaces/IUniswapV3Pool.sol";
@@ -91,6 +89,12 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
 
     /// @notice Reverts when swap callback is called from invalid sender
     error JBUniswapV4Hook_InvalidCallback();
+
+    /// @notice Reverts when amountOutMin is not provided in hookData
+    error JBUniswapV4Hook_AmountOutMinRequired();
+
+    /// @notice Reverts when swap output is below minimum required amount
+    error JBUniswapV4Hook_InsufficientOutput();
 
     //*********************************************************************//
     // ---------------------------- structs ------------------------------ //
@@ -268,14 +272,8 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
 
         // Get the price: how much baseCurrency per 1 unit of payment token
         // pricePerUnitOf returns the pricingCurrency cost for one unit of unitCurrency
-        // So: pricePerUnitOf(projectId, baseCurrency, paymentCurrencyId, 18) returns baseCurrency cost for 1 unit of paymentCurrencyId
-        // The result is scaled by 10^decimals (18 in this case)
         uint256 baseCurrencyPerPaymentToken;
         // If payment currency is the same as base currency, use 1:1 conversion
-        // Special case: JB_NATIVE_TOKEN (0xEEEe) represents ETH, same as baseCurrency = 1
-        // Since paymentToken is already converted to JB_NATIVE_TOKEN if it was address(0),
-        // we need to check if both represent ETH (paymentToken == JB_NATIVE_TOKEN && baseCurrency == 1)
-        // OR if the currency IDs match (paymentCurrencyId == baseCurrency)
         if (paymentCurrencyId == baseCurrency) {
             // Same currency IDs - direct match
             baseCurrencyPerPaymentToken = 1e18;
@@ -292,11 +290,6 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
         }
 
         // Calculate tokens based on the payment amount and weight.
-        // Implementation details:
-        // 1. paymentAmount is first normalized to 18 decimals.
-        // 2. We compute: baseTokens = (tokensPerBaseCurrency * paymentAmount18) / 1e18.
-        // 3. If baseCurrencyPerPaymentToken != 1e18, we then scale baseTokens by that rate (again / 1e18).
-        // See _calculateTokensWithCurrency() for the exact math.
         uint256 estimatedTokens = _calculateTokensWithCurrency(
             tokensPerBaseCurrency, paymentAmount, paymentTokenDecimals, baseCurrencyPerPaymentToken
         );
@@ -812,15 +805,39 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
         });
     }
 
-    /// @notice Hook called after swap to record price observations
+    /// @notice Hook called after swap to record price observations and validate slippage for V4 swaps
     /// @param key The pool key
+    /// @param params The swap parameters
+    /// @param delta The swap delta (represents actual V4 swap output for normal swaps)
+    /// @param hookData Contains amountOutMin for slippage validation
     /// @return selector The function selector
     /// @return delta The delta to return (zero in our case)
-    function _afterSwap(address, PoolKey calldata key, SwapParams calldata, BalanceDelta, bytes calldata)
-        internal
-        override
-        returns (bytes4, int128)
-    {
+    function _afterSwap(
+        address,
+        PoolKey calldata key,
+        SwapParams calldata params,
+        BalanceDelta delta,
+        bytes calldata hookData
+    ) internal override returns (bytes4, int128) {
+        // Validate slippage protection for V4 swaps
+        // Note: For V3/Juicebox routes, slippage is already validated in _beforeSwap
+        // For V4 swaps (where we returned ZERO_DELTA), this validates the actual swap output
+        if (hookData.length >= 32) {
+            uint256 amountOutMin = abi.decode(hookData, (uint256));
+            if (amountOutMin > 0) {
+                // Extract output amount from delta based on swap direction
+                int128 outputAmount = params.zeroForOne
+                    ? BalanceDeltaLibrary.amount1(delta)
+                    : BalanceDeltaLibrary.amount0(delta);
+                
+                // Only validate if output is positive (indicates a real V4 swap)
+                // For routed swaps, output might be zero/small and we already validated in _beforeSwap
+                if (outputAmount > 0 && uint256(int256(outputAmount)) < amountOutMin) {
+                    revert JBUniswapV4Hook_InsufficientOutput();
+                }
+            }
+        }
+
         _recordObservation(key.toId());
         return (BaseHook.afterSwap.selector, 0);
     }
@@ -875,7 +892,7 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
         if (hookData.length == 32) {
             amountOutMin = abi.decode(hookData, (uint256));
         } else {
-            revert("amountOutMin required in hookData");
+            revert JBUniswapV4Hook_AmountOutMinRequired();
         }
         PoolId poolId = key.toId();
 
@@ -987,14 +1004,14 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
 
             // Enforce amountOutMin guarantee
             if (outputReceived < amountOutMin) {
-                revert("Output below minimum");
+                revert JBUniswapV4Hook_InsufficientOutput();
             }
 
             return (BaseHook.beforeSwap.selector, _createSwapDelta(amountIn, outputReceived), 0);
         }
 
         // Proceed with normal v4 swap
-        // Note: For v4 swaps, the router should validate amountOutMin after the swap completes
+        // Note: Slippage protection for V4 swaps is enforced in _afterSwap hook
         emit RouteSelected(poolId, false, uniswapV4ExpectedTokens);
         return (BaseHook.beforeSwap.selector, BeforeSwapDeltaLibrary.ZERO_DELTA, 0);
     }
@@ -1106,7 +1123,7 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
         // If input is native ETH, wrap it to WETH for v3 swap
         // WETH will be minted to this contract's balance
         if (originalTokenIn == UNISWAP_NATIVE_ETH) {
-            IWETH9(payable(WETH)).deposit{value: amountIn}();
+            IWETH(payable(WETH)).deposit{value: amountIn}();
         }
         // Note: No approval needed - callback uses safeTransfer from contract balance
 
@@ -1135,7 +1152,7 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
         Currency outputCurrency;
         if (originalTokenOut == UNISWAP_NATIVE_ETH) {
             // Unwrap WETH to ETH
-            IWETH9(payable(WETH)).withdraw(outputReceived);
+            IWETH(payable(WETH)).withdraw(outputReceived);
             outputCurrency = Currency.wrap(UNISWAP_NATIVE_ETH);
         } else {
             outputCurrency = Currency.wrap(originalTokenOut);
