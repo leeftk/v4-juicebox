@@ -41,13 +41,14 @@ contract JuiceboxSwapRouter {
     /// @notice Execute a swap that allows Juicebox routing
     /// @param key The pool key
     /// @param params The swap parameters
+    /// @param amountOutMin Minimum tokens user accepts (slippage protection)
     /// @return delta The balance delta from the swap
-    function swap(PoolKey memory key, SwapParams memory params) external payable returns (BalanceDelta delta) {
+    function swap(PoolKey memory key, SwapParams memory params, uint256 amountOutMin) external payable returns (BalanceDelta delta) {
         // Set msgSender for hooks to query
         _msgSender = msg.sender;
 
-        // Encode router address in hookData so hook can call msgSender() on it
-        bytes memory hookData = abi.encode(address(this));
+        // Encode amountOutMin in hookData (required parameter)
+        bytes memory hookData = abi.encode(amountOutMin);
 
         delta =
             abi.decode(poolManager.unlock(abi.encode(CallbackData(msg.sender, key, params, hookData))), (BalanceDelta));
@@ -63,7 +64,6 @@ contract JuiceboxSwapRouter {
 
         // Determine input currency based on swap direction
         Currency inputCurrency = data.params.zeroForOne ? data.key.currency0 : data.key.currency1;
-        Currency outputCurrency = data.params.zeroForOne ? data.key.currency1 : data.key.currency0;
 
         // Get input amount (absolute value)
         uint256 inputAmount = data.params.amountSpecified < 0
@@ -99,6 +99,25 @@ contract JuiceboxSwapRouter {
         } else {
             // We pre-deposited currency1
             delta1 += int256(inputAmount);
+        }
+
+        // Validate amountOutMin for v4 routes (hook returns ZERO_DELTA, so swap happened normally)
+        // For v3/JB routes, the hook validates internally
+        uint256 amountOutMin = abi.decode(data.hookData, (uint256));
+        if (amountOutMin > 0) {
+            // Calculate output amount from delta (positive delta is output)
+            uint256 outputAmount;
+            if (data.params.zeroForOne) {
+                // Swapping currency0 for currency1: output is delta1 (positive)
+                outputAmount = delta1 > 0 ? uint256(delta1) : 0;
+            } else {
+                // Swapping currency1 for currency0: output is delta0 (positive)
+                outputAmount = delta0 > 0 ? uint256(delta0) : 0;
+            }
+            
+            if (outputAmount < amountOutMin) {
+                revert("Output below minimum");
+            }
         }
 
         // Now settle only the remaining delta

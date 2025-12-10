@@ -88,25 +88,33 @@ contract JBUniswapV4HookForkTest is Test {
     // Test user with mainnet ETH
     address testUser = address(0xBEEF);
 
-    // Default RPC URL - can be overridden by setting MAINNET_RPC_URL environment variable
-    // Note: Public RPCs may have rate limits. For reliable testing, set MAINNET_RPC_URL to your own RPC endpoint
-    string constant DEFAULT_MAINNET_RPC = "";
 
-    /// @notice Get RPC URL from environment variable or use default
+    /// @notice Get RPC URL from foundry.toml rpc_endpoints, environment variable, or use default
+    /// @dev Priority: 1) foundry.toml rpc_endpoints.mainnet (reads ${MAINNET_RPC_URL} from .env)
+    ///               2) MAINNET_RPC_URL environment variable
+    ///               3) DEFAULT_MAINNET_RPC constant
+    /// @dev To use .env file: Set MAINNET_RPC_URL in .env, foundry.toml will read it via ${MAINNET_RPC_URL}
     function _getRpcUrl() internal view returns (string memory) {
+        // First try environment variable (works if exported or loaded from .env)
         try vm.envString("MAINNET_RPC_URL") returns (string memory rpcUrl) {
             return rpcUrl;
         } catch {
-            return DEFAULT_MAINNET_RPC;
+            // Fall back to default
+            return "";
         }
     }
 
     function setUp() public {
         // Fork mainnet at a recent block
-        // Use MAINNET_RPC_URL env var if set, otherwise use default public RPC
-        string memory rpcUrl = _getRpcUrl();
-        uint256 forkId = vm.createFork(rpcUrl);
-        vm.selectFork(forkId);
+        // Try to use foundry.toml's rpc_endpoints.mainnet first (reads from .env via ${MAINNET_RPC_URL})
+        // If that fails, fall back to direct URL from environment variable or default
+        try vm.createSelectFork("mainnet") {
+            // Successfully used foundry.toml endpoint (which reads from .env)
+        } catch {
+            // Fall back to direct URL
+            string memory rpcUrl = _getRpcUrl();
+            vm.createSelectFork(rpcUrl);
+        }
 
         // Mark mainnet contracts as persistent so they can be called in fork tests
         vm.makePersistent(MAINNET_JB_TOKENS);
@@ -172,8 +180,8 @@ contract JBUniswapV4HookForkTest is Test {
 
         id = key.toId();
 
-        // Give test user some ETH
-        vm.deal(testUser, 100 ether);
+        // Give test user some ETH (enough for liquidity provision)
+        vm.deal(testUser, 1_100_000 ether); // 1M for WETH + 100k buffer
 
         // Get the price from Uniswap V3 pool to match it
         uint160 v3SqrtPriceX96 = SQRT_PRICE_1_1; // Default fallback
@@ -227,7 +235,7 @@ contract JBUniswapV4HookForkTest is Test {
             address user = testUser;
             // Fund user with tokens
             uint256 nanaAmount = 1_000_000 ether;
-            uint256 wethLiquidityEth = 2_000 ether;
+            uint256 wethLiquidityEth = 1_000_000 ether; // Match NANA amount for 1:1 price
             deal(NANA, user, nanaAmount);
             vm.deal(user, wethLiquidityEth);
 
@@ -240,6 +248,9 @@ contract JBUniswapV4HookForkTest is Test {
             IERC20(NANA).approve(address(modifyLiquidityRouter), type(uint256).max);
             IERC20(WETH).approve(address(modifyLiquidityRouter), type(uint256).max);
             IERC20(WETH).approve(address(jbSwapRouter), type(uint256).max);
+            // Approve PoolManager to transfer tokens during settlement
+            IERC20(NANA).approve(address(manager), type(uint256).max);
+            IERC20(WETH).approve(address(manager), type(uint256).max);
 
             // Add ample liquidity over a reasonably wide band
             modifyLiquidityRouter.modifyLiquidity(
@@ -637,7 +648,7 @@ contract JBUniswapV4HookForkTest is Test {
         SwapParams memory params = SwapParams({
             zeroForOne: false, amountSpecified: -int256(amountIn), sqrtPriceLimitX96: TickMath.MAX_SQRT_PRICE - 1
         });
-        jbSwapRouter.swap(key, params);
+        jbSwapRouter.swap(key, params, 0); // 1% slippage
         vm.stopPrank();
 
         // Check that observation index moved forward (or wrapped)
@@ -696,7 +707,7 @@ contract JBUniswapV4HookForkTest is Test {
             zeroForOne: true, amountSpecified: -int256(5000 ether), sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1
         });
         // Best-effort; ignore failure due to liquidity limits
-        try swapRouter.swap(key, pushDownNANAPrice, PoolSwapTest.TestSettings(false, false), ZERO_BYTES) {} catch {}
+        try swapRouter.swap(key, pushDownNANAPrice, PoolSwapTest.TestSettings(false, false), abi.encode(uint256(100))) {} catch {} // 1% slippage
 
         // Now do the priced swap via JB router (so hook can choose route)
         vm.recordLogs();
@@ -704,7 +715,7 @@ contract JBUniswapV4HookForkTest is Test {
         SwapParams memory testSwap = SwapParams({
             zeroForOne: false, amountSpecified: -int256(amountIn), sqrtPriceLimitX96: TickMath.MAX_SQRT_PRICE - 1
         });
-        try jbSwapRouter.swap(key, testSwap) {
+        try jbSwapRouter.swap(key, testSwap, 0) { // 1% slippage
             (string memory route, uint256 expectedTokens) = _getLastBestRouteFromLogs();
             // Expect v4 due to manipulated favorable v4 price
             assertEq(keccak256(bytes(route)), keccak256("v4"), "Expected best route to be v4");
@@ -746,7 +757,7 @@ contract JBUniswapV4HookForkTest is Test {
             zeroForOne: false, amountSpecified: -int256(5000 ether), sqrtPriceLimitX96: TickMath.MAX_SQRT_PRICE - 1
         });
         // Best-effort; ignore failure due to liquidity limits
-        try swapRouter.swap(key, pushUpWETHSupply, PoolSwapTest.TestSettings(false, false), ZERO_BYTES) {} catch {}
+        try swapRouter.swap(key, pushUpWETHSupply, PoolSwapTest.TestSettings(false, false), abi.encode(uint256(100))) {} catch {} // 1% slippage
 
         // Now do the priced swap via JB router (so hook can choose route)
         vm.recordLogs();
@@ -754,7 +765,7 @@ contract JBUniswapV4HookForkTest is Test {
         SwapParams memory testSwap = SwapParams({
             zeroForOne: true, amountSpecified: -int256(amountIn), sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1
         });
-        try jbSwapRouter.swap(key, testSwap) {
+        try jbSwapRouter.swap(key, testSwap, 0) { // 1% slippage
             (string memory route, uint256 expectedTokens) = _getLastBestRouteFromLogs();
             // Expect v4 due to manipulated favorable v4 price
             assertEq(keccak256(bytes(route)), keccak256("v4"), "Expected best route to be v4");
@@ -799,7 +810,7 @@ contract JBUniswapV4HookForkTest is Test {
         SwapParams memory pushUpNANAPrice = SwapParams({
             zeroForOne: false, amountSpecified: -int256(5000 ether), sqrtPriceLimitX96: TickMath.MAX_SQRT_PRICE - 1
         });
-        try swapRouter.swap(key, pushUpNANAPrice, PoolSwapTest.TestSettings(false, false), ZERO_BYTES) {} catch {}
+        try swapRouter.swap(key, pushUpNANAPrice, PoolSwapTest.TestSettings(false, false), abi.encode(uint256(100))) {} catch {} // 1% slippage
 
         // Now perform a small WETH->NANA swap and expect "v3"
         // First check that v3 is actually better than Juicebox
@@ -823,7 +834,7 @@ contract JBUniswapV4HookForkTest is Test {
             SwapParams memory testSwap = SwapParams({
                 zeroForOne: false, amountSpecified: -int256(amountIn), sqrtPriceLimitX96: TickMath.MAX_SQRT_PRICE - 1
             });
-            try jbSwapRouter.swap(key, testSwap) {
+            try jbSwapRouter.swap(key, testSwap, 0) { // 1% slippage
                 (string memory route, uint256 expectedTokens) = _getLastBestRouteFromLogs();
                 assertEq(keccak256(bytes(route)), keccak256("v3"), "Expected best route to be v3");
             } catch Error(string memory reason) {
@@ -868,7 +879,7 @@ contract JBUniswapV4HookForkTest is Test {
         SwapParams memory pushDownWETHLiquidity = SwapParams({
             zeroForOne: true, amountSpecified: -int256(5000 ether), sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1
         });
-        try swapRouter.swap(key, pushDownWETHLiquidity, PoolSwapTest.TestSettings(false, false), ZERO_BYTES) {} catch {}
+        try swapRouter.swap(key, pushDownWETHLiquidity, PoolSwapTest.TestSettings(false, false), abi.encode(uint256(100))) {} catch {} // 1% slippage
 
         // Now perform a NANA->WETH swap and expect "v3"
         vm.recordLogs();
@@ -876,7 +887,7 @@ contract JBUniswapV4HookForkTest is Test {
         SwapParams memory testSwap = SwapParams({
             zeroForOne: true, amountSpecified: -int256(amountIn), sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1
         });
-        try jbSwapRouter.swap(key, testSwap) {
+        try jbSwapRouter.swap(key, testSwap, 0) { // 1% slippage
             (string memory route, uint256 expectedTokens) = _getLastBestRouteFromLogs();
             assertEq(keccak256(bytes(route)), keccak256("v3"), "Expected best route to be v3");
         } catch Error(string memory reason) {
@@ -978,7 +989,7 @@ contract JBUniswapV4HookForkTest is Test {
             sqrtPriceLimitX96: TickMath.MAX_SQRT_PRICE - 1
         });
 
-        try jbSwapRouter.swap{value: amountIn}(useKey, testSwap) {
+        try jbSwapRouter.swap{value: amountIn}(useKey, testSwap, 100) { // 1% slippage
             (string memory route, uint256 expectedTokens) = _getLastBestRouteFromLogs();
 
             // Check for primary terminal (same check as in JBUniswapV4Hook.sol)
@@ -1092,7 +1103,7 @@ contract JBUniswapV4HookForkTest is Test {
             zeroForOne: true, amountSpecified: -int256(amountIn), sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1
         });
 
-        try jbSwapRouter.swap(useKey, testSwap) {
+        try jbSwapRouter.swap(useKey, testSwap, 0) { // 1% slippage
             (string memory route,) = _getLastBestRouteFromLogs();
 
             IJBTerminal jbTerminal;
@@ -1180,7 +1191,7 @@ contract JBUniswapV4HookForkTest is Test {
             amountSpecified: -int256(5000 ether),
             sqrtPriceLimitX96: TickMath.MAX_SQRT_PRICE - 1
         });
-        try swapRouter.swap(nativeKey, priceManipulation, PoolSwapTest.TestSettings(false, false), ZERO_BYTES) {}
+        try swapRouter.swap(nativeKey, priceManipulation, PoolSwapTest.TestSettings(false, false), abi.encode(uint256(100))) {} // 1% slippage
             catch {}
 
         // Calculate expected outputs for buying
@@ -1228,7 +1239,7 @@ contract JBUniswapV4HookForkTest is Test {
             sqrtPriceLimitX96: TickMath.MAX_SQRT_PRICE - 1
         });
 
-        try jbSwapRouter.swap{value: buyAmount}(nativeKey, buySwap) {
+        try jbSwapRouter.swap{value: buyAmount}(nativeKey, buySwap, 100) { // 1% slippage
             // Verify route was Juicebox
             (string memory route,) = _getLastBestRouteFromLogs();
             assertEq(keccak256(bytes(route)), keccak256("juicebox"), "Should route through Juicebox");
@@ -1301,7 +1312,7 @@ contract JBUniswapV4HookForkTest is Test {
 
         // Execute buy - this may route through Juicebox or Uniswap
         // If swap fails, that's a test failure, not something to silently skip
-        jbSwapRouter.swap(key, buySwap);
+        jbSwapRouter.swap(key, buySwap, 0); // 1% slippage
 
         // Check user's NANA balance
         uint256 userNANABalance = IERC20(NANA).balanceOf(user);
@@ -1316,7 +1327,7 @@ contract JBUniswapV4HookForkTest is Test {
             amountSpecified: -int256(5000 ether),
             sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1
         });
-        try swapRouter.swap(key, priceManipulation, PoolSwapTest.TestSettings(false, false), ZERO_BYTES) {} catch {}
+        try swapRouter.swap(key, priceManipulation, PoolSwapTest.TestSettings(false, false), abi.encode(uint256(100))) {} catch {} // 1% slippage
 
         // Calculate expected outputs for selling
         uint256 sellAmount = userNANABalance > 1000 ether ? 1000 ether : userNANABalance / 2;
@@ -1374,7 +1385,7 @@ contract JBUniswapV4HookForkTest is Test {
             sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1
         });
 
-        try jbSwapRouter.swap(key, sellSwap) {
+        try jbSwapRouter.swap(key, sellSwap, 0) { // 1% slippage
             // Verify route matches expectation based on terminal availability
             (string memory route,) = _getLastBestRouteFromLogs();
             if (expectJuiceboxRoute) {
@@ -1523,7 +1534,7 @@ contract JBUniswapV4HookForkTest is Test {
         // Should revert - the error is wrapped by Uniswap v4's error handling
         // We verify that exact output swaps are not supported by checking for any revert
         vm.expectRevert();
-        jbSwapRouter.swap(key, params);
+        jbSwapRouter.swap(key, params, 0); // 1% slippage
 
         vm.stopPrank();
     }

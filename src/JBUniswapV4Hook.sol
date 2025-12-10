@@ -54,9 +54,6 @@ import {JBRulesetMetadata} from "@bananapus/core-v5/structs/JBRulesetMetadata.so
 import {JBRulesetMetadataResolver} from "@bananapus/core-v5/libraries/JBRulesetMetadataResolver.sol";
 import {JBConstants} from "@bananapus/core-v5/libraries/JBConstants.sol";
 
-// Import PRB Math for logarithmic functions
-import {UD60x18} from "../lib/prb-math/src/ud60x18/ValueType.sol";
-import {log2} from "../lib/prb-math/src/ud60x18/Math.sol";
 
 /// @title JBUniswapV4Hook
 /// @notice Official Juicebox integration for Uniswap v4 that provides intelligent price comparison and optimal routing
@@ -152,9 +149,6 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
 
     /// @notice The denominator used when calculating TWAP slippage percent values.
     uint256 public constant TWAP_SLIPPAGE_DENOMINATOR = 10_000;
-
-    /// @notice The uncertain slippage tolerance allowed.
-    uint256 public constant UNCERTAIN_TWAP_SLIPPAGE_TOLERANCE = 1050;
 
     //*********************************************************************//
     // --------------------- public stored properties -------------------- //
@@ -426,7 +420,6 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
     }
 
     /// @notice Estimate expected output tokens from a Uniswap v3 swap using TWAP
-    /// @dev Uses sophisticated TWAP calculation with slippage protection
     /// @param token0 First token in the pair
     /// @param token1 Second token in the pair
     /// @param amountIn The input amount
@@ -437,23 +430,18 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
         view
         returns (uint256 estimatedOut)
     {
-        // Use _getQuote which handles the factory call internally
-        // For _getQuote: (projectToken, amountIn, terminalToken) -> amountOut
-        // When zeroForOne=true: swapping token0->token1, so token0 is input, token1 is output
-        //   We want: how many token1 do we get for token0? So projectToken=token1, terminalToken=token0
-        // When zeroForOne=false: swapping token1->token0, so token1 is input, token0 is output
-        //   We want: how many token0 do we get for token1? So projectToken=token0, terminalToken=token1
+        // Determine input/output tokens based on swap direction
         address inputToken = zeroForOne ? token0 : token1;
         address outputToken = zeroForOne ? token1 : token0;
         estimatedOut = _getQuote(outputToken, amountIn, inputToken);
         return estimatedOut;
     }
 
-    /// @notice Get a quote based on the TWAP, using the standard TWAP window and slippage tolerance.
-    /// @param projectToken The token being received (quote token).
-    /// @param amountIn The number of terminal tokens being used to swap.
-    /// @param terminalToken The token being paid in (base token).
-    /// @return amountOut The minimum number of tokens to receive based on the TWAP and its params.
+    /// @notice Get a quote based on the TWAP
+    /// @param projectToken The token being received (quote token)
+    /// @param amountIn The number of terminal tokens being used to swap
+    /// @param terminalToken The token being paid in (base token)
+    /// @return amountOut The expected number of tokens to receive
     function _getQuote(address projectToken, uint256 amountIn, address terminalToken)
         internal
         view
@@ -520,118 +508,12 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
         // If there's no liquidity, return an empty quote.
         if (liquidity == 0) return 0;
 
-        // Calculate the slippage tolerance.
-        uint256 slippageTolerance = _getSlippageTolerance({
-            amountIn: amountIn,
-            liquidity: liquidity,
-            projectToken: projectToken,
-            terminalToken: terminalToken,
-            arithmeticMeanTick: arithmeticMeanTick
-        });
-
-        // If the slippage tolerance is at or above the maximum, return an empty quote.
-        if (slippageTolerance >= TWAP_SLIPPAGE_DENOMINATOR) return 0;
-
         // Get a quote based on this TWAP tick.
         amountOut = _getQuoteAtTick({
             tick: arithmeticMeanTick, baseAmount: uint128(amountIn), baseToken: terminalToken, quoteToken: projectToken
         });
-
-        // return the lowest acceptable return based on the TWAP and its parameters.
-        // Ensure slippageTolerance doesn't exceed denominator to prevent underflow
-        uint256 slippageAmount = (amountOut * slippageTolerance) / TWAP_SLIPPAGE_DENOMINATOR;
-        // Safety check: ensure we don't subtract more than amountOut
-        if (slippageAmount > amountOut) {
-            return 0;
-        }
-        amountOut -= slippageAmount;
     }
 
-    /// @notice Get the slippage tolerance for a given amount in and liquidity.
-    /// @param amountIn The amount in to get the slippage tolerance for.
-    /// @param liquidity The liquidity to get the slippage tolerance for.
-    /// @param projectToken The project token to get the slippage tolerance for.
-    /// @param terminalToken The terminal token to get the slippage tolerance for.
-    /// @param arithmeticMeanTick The arithmetic mean tick to get the slippage tolerance for.
-    /// @return slippageTolerance The slippage tolerance for the given amount in and liquidity.
-    function _getSlippageTolerance(
-        uint256 amountIn,
-        uint128 liquidity,
-        address projectToken,
-        address terminalToken,
-        int24 arithmeticMeanTick
-    ) internal pure returns (uint256) {
-        // Direction: is terminalToken token0?
-        (address token0,) = projectToken < terminalToken ? (projectToken, terminalToken) : (terminalToken, projectToken);
-        bool zeroForOne = terminalToken == token0;
-
-        // sqrtP in Q96 from the TWAP tick
-        uint160 sqrtP = TickMath.getSqrtPriceAtTick(arithmeticMeanTick);
-
-        // If the sqrtP is 0, there's no valid price so we'll return the maximum slippage tolerance.
-        if (sqrtP == 0) return TWAP_SLIPPAGE_DENOMINATOR;
-
-        // Approximate % of range liquidity consumed by the swap (in bps)
-        // Multiply by 10 to to amplify the results and prevent results on the low end from rounding to zero.
-        uint256 base = FullMath.mulDiv(amountIn, 10 * TWAP_SLIPPAGE_DENOMINATOR, uint256(liquidity));
-
-        // Stage 1 — raw estimate (bps), normalized by √P
-        uint256 rawSlippageBps = zeroForOne
-            ? FullMath.mulDiv(base, uint256(sqrtP), uint256(1) << 96)
-            : FullMath.mulDiv(base, uint256(1) << 96, uint256(sqrtP));
-
-        // Stage 2 — policy adjustment: map raw → adjusted using log scaling and caps
-        // Higher rawSlippageBps (lower liquidity) = MORE protection. Lower rawSlippageBps = LESS protection.
-        if (rawSlippageBps == 0) return UNCERTAIN_TWAP_SLIPPAGE_TOLERANCE;
-
-        // Cap very large values at reasonable maximum
-        // Ensure maxAllowed never exceeds TWAP_SLIPPAGE_DENOMINATOR (100%)
-        uint256 maxAllowed = rawSlippageBps > 15 * TWAP_SLIPPAGE_DENOMINATOR
-            ? TWAP_SLIPPAGE_DENOMINATOR * 88 / 100
-            : (rawSlippageBps > 10 * TWAP_SLIPPAGE_DENOMINATOR
-                    ? TWAP_SLIPPAGE_DENOMINATOR * 67 / 100
-                    : rawSlippageBps / 5); // Default max: 20% of input
-
-        // Cap maxAllowed at 100% (safety check)
-        //@note maybe this should be capped at 99%? Or even 95%?
-        if (maxAllowed > TWAP_SLIPPAGE_DENOMINATOR) {
-            maxAllowed = TWAP_SLIPPAGE_DENOMINATOR;
-        }
-
-        // Logarithmic scaling: Use log2 to create smooth growth with diminishing returns
-        // Formula: adjusted grows logarithmically with rawSlippageBps
-        // Scale rawSlippageBps to UD60x18 format (multiply by 1e18 to satisfy log2 requirement of x >= UNIT)
-        uint256 scaledValue = rawSlippageBps * 1e18;
-        if (scaledValue < 1e18) scaledValue = 1e18; // Ensure >= UNIT for log2
-
-        UD60x18 logValue = log2(UD60x18.wrap(scaledValue));
-
-        // Unwrap logValue - it's in UD60x18 format where 1 = 1e18
-        // Divide by 1e18 to get the actual log2 value
-        uint256 logApprox = UD60x18.unwrap(logValue) / 1e18;
-
-        // Base value: minimum slippage protection (for very small raw/high liquidity)
-        uint256 baseValue = UNCERTAIN_TWAP_SLIPPAGE_TOLERANCE;
-
-        // Scale factor: how much the log value contributes to the result
-        // Higher scaleFactor = steeper curve (more sensitive to liquidity changes)
-        uint256 scaleFactor = 800; // Adjusts the steepness of the logarithmic curve
-
-        // Calculate adjusted: base + logarithmic growth
-        // Higher raw (low liquidity) → larger logApprox → larger adjusted (more protection)
-        // Lower raw (high liquidity) → smaller logApprox → smaller adjusted (less protection)
-        uint256 adjustedSlippageBps = baseValue + (scaleFactor * logApprox) / 2;
-
-        // Cap at reasonable maximum to prevent excessive slippage protection (maxAllowed already capped at 100%)
-        if (adjustedSlippageBps > maxAllowed) adjustedSlippageBps = maxAllowed;
-
-        // For very small raw (high liquidity), ensure minimum sensible protection
-        if (rawSlippageBps < 500 && adjustedSlippageBps < baseValue + 100) {
-            adjustedSlippageBps = baseValue + (rawSlippageBps / 5);
-        }
-
-        return adjustedSlippageBps;
-    }
 
     /// @notice Calculates time-weighted means of tick and liquidity for a given Uniswap V3 pool
     /// @param pool The pool that we want to observe
@@ -975,32 +857,26 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
         return (BaseHook.afterRemoveLiquidity.selector, BalanceDelta.wrap(0));
     }
 
-    /// @notice Hook called before a swap
-    /// @dev Compares prices between Uniswap and Juicebox, routes to cheaper option
-    /// @notice Main routing logic that compares prices across V4, V3, and Juicebox routes
-    /// @dev This function is called by Uniswap V4 before every swap. It:
-    ///      1. Validates exact-input swap (reverts on exact-output)
-    ///      2. Detects if swap involves a Juicebox project token
-    ///      3. Calculates expected outputs from all three routes (V4, V3, Juicebox)
-    ///      4. Compares outputs and routes to the best option
-    ///      5. Returns swap delta to override V4 swap if routing elsewhere
-    /// 
+    /// @notice Routes swaps to the best option among V4, V3, and Juicebox
+    /// @dev Compares expected outputs and routes to the option with highest output
     /// @param key The pool key identifying the V4 pool
     /// @param params The swap parameters (direction, amount, price limit)
+    /// @param hookData Must contain amountOutMin as uint256 (minimum tokens user accepts)
     /// @return selector The function selector (BaseHook.beforeSwap.selector)
     /// @return delta The swap delta (zero for V4, custom for V3/Juicebox routing)
-    /// @return protocolFee The protocol fee (always 0, handled by PoolManager)
-    /// 
-    /// @custom:security This function:
-    ///      - Only supports exact-input swaps (prevents exact-output manipulation)
-    ///      - Uses TWAP oracles for price estimates (prevents manipulation)
-    ///      - Validates terminal existence before routing through Juicebox
-    ///      - Validates V3 pool existence and unlock status before routing
-    function _beforeSwap(address, PoolKey calldata key, SwapParams calldata params, bytes calldata)
+    /// @return protocolFee The protocol fee (always 0)
+    function _beforeSwap(address, PoolKey calldata key, SwapParams calldata params, bytes calldata hookData)
         internal
         override
         returns (bytes4, BeforeSwapDelta, uint24)
     {
+        // Decode amountOutMin from hookData (required: uint256)
+        uint256 amountOutMin;
+        if (hookData.length == 32) {
+            amountOutMin = abi.decode(hookData, (uint256));
+        } else {
+            revert("amountOutMin required in hookData");
+        }
         PoolId poolId = key.toId();
 
         // Only support exact-input swaps (amountSpecified < 0)
@@ -1048,8 +924,7 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
         // Calculate how many tokens we'd get from Uniswap v4
         uint256 uniswapV4ExpectedTokens = estimateUniswapOutput(poolId, key, amountIn, params.zeroForOne);
 
-        // Calculate how many tokens we'd get from Uniswap v3 (10000 fee tier only)
-        // v3 pools use WETH, not address(0), so convert native ETH to WETH for v3 operations
+        // Calculate expected output from Uniswap v3 (convert native ETH to WETH for v3)
         address v3TokenIn = _convertToV3Token(tokenIn);
         address v3TokenOut = _convertToV3Token(tokenOut);
         // Determine v3 swap direction based on token ordering (v3 uses token0 < token1)
@@ -1096,8 +971,9 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
             emit RouteSelected(poolId, true, juiceboxExpectedOutput);
 
             // Execute Juicebox routing (works for both buying and selling)
+            // JB terminal enforces amountOutMin internally via minReturnedTokens/minTokensReclaimed
             uint256 outputReceived =
-                _routeThroughJuicebox(projectId, inputCurrency, outputCurrency, amountIn, isBuyingJBToken, jbTerminal);
+                _routeThroughJuicebox(projectId, inputCurrency, outputCurrency, amountIn, isBuyingJBToken, jbTerminal, amountOutMin);
 
             return (BaseHook.beforeSwap.selector, _createSwapDelta(amountIn, outputReceived), 0);
         }
@@ -1106,53 +982,31 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
             // Log the expected amount for the chosen route
             emit RouteSelected(poolId, false, uniswapV3ExpectedTokens);
 
-            // Execute v3 swap (pass pre-calculated token ordering with WETH mapping)
-            // Note: v3Token0 and v3Token1 already have address(0) converted to WETH
             uint256 outputReceived =
                 _routeThroughV3(v3Token0, v3Token1, amountIn, v3ZeroForOne, tokenIn, tokenOut);
 
-            // Return delta that reflects what hook did
+            // Enforce amountOutMin guarantee
+            if (outputReceived < amountOutMin) {
+                revert("Output below minimum");
+            }
+
             return (BaseHook.beforeSwap.selector, _createSwapDelta(amountIn, outputReceived), 0);
         }
 
-        // Proceed with normal v4 swap (RouteSelected already logs expected V4 amount)
+        // Proceed with normal v4 swap
+        // Note: For v4 swaps, the router should validate amountOutMin after the swap completes
         emit RouteSelected(poolId, false, uniswapV4ExpectedTokens);
         return (BaseHook.beforeSwap.selector, BeforeSwapDeltaLibrary.ZERO_DELTA, 0);
     }
 
     /// @notice Routes a swap through Juicebox terminal instead of Uniswap
-    /// @dev This function handles both buying and selling Juicebox project tokens:
-    ///      - Buying: Calls terminal.pay() to mint tokens
-    ///      - Selling: Calls terminal.cashOutTokensOf() to redeem tokens
-    /// 
-    ///      The function:
-    ///      1. Takes input tokens from PoolManager
-    ///      2. Normalizes tokens (native ETH → JB_NATIVE_TOKEN)
-    ///      3. Approves terminal if needed (ERC20 tokens)
-    ///      4. Executes Juicebox operation (pay or cashOutTokensOf)
-    ///      5. Settles output back to PoolManager
-    /// 
     /// @param projectId The Juicebox project ID
     /// @param inputCurrency The input currency (native ETH or ERC20)
     /// @param outputCurrency The output currency (native ETH or ERC20)
     /// @param amountIn The input amount
     /// @param isBuying Whether we're buying (true) or selling (false) JB tokens
-    /// @param terminal The Juicebox terminal to use (must be valid and have code)
-    /// @return outputReceived The amount of output tokens received
-    /// 
-    /// @custom:security This function:
-    ///      - Validates terminal exists and has code before calling
-    ///      - Uses SafeERC20 for token transfers
-    ///      - Handles native ETH properly (wrapping/unwrapping not needed for JB)
-    ///      - Settles output back to PoolManager (prevents token loss)
-    /// @notice Routes a swap through Juicebox instead of Uniswap
-    /// @dev Handles both buying and selling JB tokens through Juicebox
-    /// @param projectId The Juicebox project ID
-    /// @param inputCurrency The input currency (what the swapper is paying)
-    /// @param outputCurrency The output currency (what the swapper receives)
-    /// @param amountIn The amount of input tokens
-    /// @param isBuying Whether we're buying JB tokens (true) or selling them (false)
-    /// @param terminal The Juicebox terminal to use (already validated by caller)
+    /// @param terminal The Juicebox terminal to use
+    /// @param amountOutMin Minimum tokens user accepts (enforced by JB terminal)
     /// @return outputReceived The amount of output tokens received
     function _routeThroughJuicebox(
         uint256 projectId,
@@ -1160,7 +1014,8 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
         Currency outputCurrency,
         uint256 amountIn,
         bool isBuying,
-        IJBTerminal terminal
+        IJBTerminal terminal,
+        uint256 amountOutMin
     ) internal returns (uint256 outputReceived) {
         address tokenIn = Currency.unwrap(inputCurrency);
         address tokenOut = Currency.unwrap(outputCurrency);
@@ -1189,7 +1044,7 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
                 normalizedTokenIn, // Native ETH → JB_NATIVE_TOKEN
                 amountIn,
                 address(this), // Tokens come to hook
-                0, // No minimum tokens required
+                amountOutMin, // Minimum tokens required (enforced by JB terminal)
                 "", // Empty memo
                 bytes("") // Empty metadata
             );
@@ -1204,7 +1059,7 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
                     projectId,
                     amountIn, // cashOutCount: Amount of JB tokens to cash out
                     normalizedTokenOut, // Native ETH → JB_NATIVE_TOKEN
-                    0, // minTokensReclaimed: No minimum tokens required
+                    amountOutMin, // minTokensReclaimed: Minimum tokens required (enforced by JB terminal)
                     payable(address(this)), // beneficiary (hook)
                     bytes("") // Empty metadata
                 );
@@ -1216,24 +1071,7 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
         return outputReceived;
     }
 
-    /// @notice Routes a swap through Uniswap v3 instead of v4
-    /// @dev Takes input tokens from PoolManager, executes v3 swap, settles output tokens back
-    /// @dev Handles wrapping/unwrapping ETH↔WETH since v3 uses WETH but v4 can use native ETH
-    /// @param token0 The v3 token0 address (token0 < token1, already converted to WETH if needed)
-    /// @param token1 The v3 token1 address (token0 < token1, already converted to WETH if needed)
-    /// @param amountIn The amount of input tokens
-    /// @param zeroForOne Whether swapping token0 for token1
-    /// @param originalTokenIn The original tokenIn from v4 (may be address(0) for native ETH)
-    /// @param originalTokenOut The original tokenOut from v4 (may be address(0) for native ETH)
     /// @notice Routes a swap through Uniswap V3 pool when it offers better prices than V4
-    /// @dev This function:
-    ///      1. Looks up V3 pool via factory (10000 fee tier only)
-    ///      2. Validates pool exists and is unlocked
-    ///      3. Wraps native ETH to WETH if input is native ETH
-    ///      4. Executes V3 swap (calls uniswapV3SwapCallback during execution)
-    ///      5. Unwraps WETH to native ETH if output is native ETH
-    ///      6. Settles output back to PoolManager
-    /// 
     /// @param token0 First token in pair (must be < token1, already converted to WETH if native ETH)
     /// @param token1 Second token in pair (already converted to WETH if native ETH)
     /// @param amountIn The input amount
@@ -1241,13 +1079,6 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
     /// @param originalTokenIn Original input token (may be native ETH)
     /// @param originalTokenOut Original output token (may be native ETH)
     /// @return outputReceived The amount of output tokens received
-    /// 
-    /// @custom:security This function:
-    ///      - Validates V3 pool exists (reverts if not found)
-    ///      - Validates pool is unlocked (reverts if locked)
-    ///      - Uses WETH for V3 operations (V3 doesn't support native ETH)
-    ///      - Validates callback via uniswapV3SwapCallback()
-    ///      - Settles output back to PoolManager (prevents token loss)
     function _routeThroughV3(
         address token0,
         address token1,
@@ -1315,27 +1146,10 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
         return outputReceived;
     }
 
-    /// @notice Callback for Uniswap v3 swaps
-    /// @dev Called by the v3 pool during swap execution to request payment. This function:
-    ///      1. Validates at least one delta is positive (actual swap occurred)
-    ///      2. Decodes pool info from data (token0, token1, fee)
-    ///      3. Validates caller is a legitimate V3 pool from factory
-    ///      4. Determines which token to pay (the one with positive delta)
-    ///      5. Transfers required amount to the pool
-    /// 
+    /// @notice Callback for Uniswap v3 swaps to pay for the swap
     /// @param amount0Delta The amount of token0 that must be paid (positive) or received (negative)
     /// @param amount1Delta The amount of token1 that must be paid (positive) or received (negative)
     /// @param data Additional data containing pool info (token0, token1, fee) for validation
-    /// 
-    /// @custom:security This function is critical for security:
-    ///      - Validates swap occurred (at least one delta > 0)
-    ///      - Validates caller is legitimate V3 pool (via factory lookup)
-    ///      - Validates pool exists (not address(0))
-    ///      - Uses SafeERC20 for token transfers
-    ///      - Tokens should already be in contract from take() call in _routeThroughV3()
-    /// 
-    /// @custom:invariant msg.sender must be a valid V3 pool from V3_FACTORY
-    /// @custom:invariant At least one delta must be positive (swap must have occurred)
     function uniswapV3SwapCallback(int256 amount0Delta, int256 amount1Delta, bytes calldata data) external override {
         if (amount0Delta <= 0 && amount1Delta <= 0) revert JBUniswapV4Hook_NoSwap();
 
