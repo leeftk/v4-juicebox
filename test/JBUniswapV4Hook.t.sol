@@ -53,9 +53,18 @@ contract MockJBTokens {
 
 contract MockJBDirectory {
     address public mockTerminal;
+    address public mockController;
 
     function setMockTerminal(address terminal) external {
         mockTerminal = terminal;
+    }
+
+    function setMockController(address controller) external {
+        mockController = controller;
+    }
+
+    function controllerOf(uint256 /* projectId */) external view returns (address) {
+        return mockController;
     }
 
     function primaryTerminalOf(
@@ -646,6 +655,9 @@ contract JuiceboxHookTest is Test {
 
         // Set up the directory to point to the terminal
         mockJBDirectory.setMockTerminal(address(mockJBMultiTerminal));
+        
+        // Set up the directory to return the controller
+        mockJBDirectory.setMockController(address(mockJBController));
 
         // Set up the terminal store reference in the terminal
         mockJBMultiTerminal.setTerminalStore(address(mockJBTerminalStore));
@@ -671,7 +683,6 @@ contract JuiceboxHookTest is Test {
             IPoolManager(address(manager)),
             IJBTokens(address(mockJBTokens)),
             IJBDirectory(address(mockJBDirectory)),
-            IJBController(address(mockJBController)),
             IJBPrices(address(mockJBPrices)),
             IJBTerminalStore(address(mockJBTerminalStore)),
             IUniswapV3Factory(address(mockV3Factory)),
@@ -694,7 +705,6 @@ contract JuiceboxHookTest is Test {
             IPoolManager(address(manager)),
             IJBTokens(address(mockJBTokens)),
             IJBDirectory(address(mockJBDirectory)),
-            IJBController(address(mockJBController)),
             IJBPrices(address(mockJBPrices)),
             IJBTerminalStore(address(mockJBTerminalStore)),
             IUniswapV3Factory(address(mockV3Factory)),
@@ -2437,7 +2447,6 @@ contract JuiceboxHookTest is Test {
             IPoolManager(address(manager)),
             IJBTokens(address(mockJBTokens)),
             IJBDirectory(address(mockJBDirectory)),
-            IJBController(address(mockJBController)),
             IJBPrices(address(mockJBPrices)),
             IJBTerminalStore(address(mockJBTerminalStore)),
             IUniswapV3Factory(address(mockV3Factory)),
@@ -2452,7 +2461,6 @@ contract JuiceboxHookTest is Test {
             IPoolManager(address(manager)),
             IJBTokens(address(mockJBTokens)),
             IJBDirectory(address(mockJBDirectory)),
-            IJBController(address(mockJBController)),
             IJBPrices(address(mockJBPrices)),
             IJBTerminalStore(address(mockJBTerminalStore)),
             IUniswapV3Factory(address(mockV3Factory)),
@@ -2500,7 +2508,6 @@ contract JuiceboxHookTest is Test {
             IPoolManager(address(manager)),
             IJBTokens(address(mockJBTokens)),
             IJBDirectory(address(mockJBDirectory)),
-            IJBController(address(mockJBController)),
             IJBPrices(address(mockJBPrices)),
             IJBTerminalStore(address(mockJBTerminalStore)),
             IUniswapV3Factory(address(mockV3Factory)),
@@ -2515,7 +2522,6 @@ contract JuiceboxHookTest is Test {
             IPoolManager(address(manager)),
             IJBTokens(address(mockJBTokens)),
             IJBDirectory(address(mockJBDirectory)),
-            IJBController(address(mockJBController)),
             IJBPrices(address(mockJBPrices)),
             IJBTerminalStore(address(mockJBTerminalStore)),
             IUniswapV3Factory(address(mockV3Factory)),

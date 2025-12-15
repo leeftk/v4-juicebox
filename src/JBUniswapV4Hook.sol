@@ -246,7 +246,7 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
         // Get the currency Id for the `weight`.
         uint256 baseCurrency;
         uint16 reservedPercent;
-        try IJBController(DIRECTORY.controllerOf(projectId)).currentRulesetOf(
+        try IJBController(address(DIRECTORY.controllerOf(projectId))).currentRulesetOf(
             projectId
         ) returns (JBRuleset memory ruleset, JBRulesetMetadata memory metadata) {
             tokensPerBaseCurrency = ruleset.weight;
