@@ -120,9 +120,6 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
     /// @notice The Juicebox directory for terminal lookup
     IJBDirectory public immutable DIRECTORY;
 
-    /// @notice The Juicebox controller for ruleset information
-    IJBController public immutable CONTROLLER;
-
     /// @notice The Juicebox prices contract for currency conversion
     IJBPrices public immutable PRICES;
 
@@ -185,7 +182,6 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
     /// @param poolManager The Uniswap v4 pool manager
     /// @param tokens The Juicebox tokens contract
     /// @param directory The Juicebox directory
-    /// @param controller The Juicebox controller
     /// @param prices The Juicebox prices contract for currency conversion
     /// @param terminalStore The Juicebox terminal store for getting reclaimable surplus
     /// @param v3Factory The Uniswap v3 factory for v3 pool lookups
@@ -194,7 +190,6 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
         IPoolManager poolManager,
         IJBTokens tokens,
         IJBDirectory directory,
-        IJBController controller,
         IJBPrices prices,
         IJBTerminalStore terminalStore,
         IUniswapV3Factory v3Factory,
@@ -202,7 +197,6 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
     ) BaseHook(poolManager) {
         TOKENS = tokens;
         DIRECTORY = directory;
-        CONTROLLER = controller;
         PRICES = prices;
         TERMINAL_STORE = terminalStore;
         V3_FACTORY = v3Factory;
@@ -252,7 +246,7 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
         // Get the currency Id for the `weight`.
         uint256 baseCurrency;
         uint16 reservedPercent;
-        try CONTROLLER.currentRulesetOf(
+        try IJBController(address(DIRECTORY.controllerOf(projectId))).currentRulesetOf(
             projectId
         ) returns (JBRuleset memory ruleset, JBRulesetMetadata memory metadata) {
             tokensPerBaseCurrency = ruleset.weight;

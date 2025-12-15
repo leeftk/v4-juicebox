@@ -147,7 +147,6 @@ contract JBUniswapV4HookForkTest is Test {
             IPoolManager(address(manager)),
             IJBTokens(MAINNET_JB_TOKENS),
             IJBDirectory(MAINNET_JB_DIRECTORY),
-            IJBController(MAINNET_JB_CONTROLLER),
             IJBPrices(MAINNET_JB_PRICES),
             IJBTerminalStore(MAINNET_JB_TERMINAL_STORE),
             IUniswapV3Factory(MAINNET_V3_FACTORY),
@@ -162,7 +161,6 @@ contract JBUniswapV4HookForkTest is Test {
             IPoolManager(address(manager)),
             IJBTokens(MAINNET_JB_TOKENS),
             IJBDirectory(MAINNET_JB_DIRECTORY),
-            IJBController(MAINNET_JB_CONTROLLER),
             IJBPrices(MAINNET_JB_PRICES),
             IJBTerminalStore(MAINNET_JB_TERMINAL_STORE),
             IUniswapV3Factory(MAINNET_V3_FACTORY),
@@ -342,7 +340,6 @@ contract JBUniswapV4HookForkTest is Test {
         assertTrue(address(hook) != address(0), "Hook should be deployed");
         assertEq(address(hook.TOKENS()), MAINNET_JB_TOKENS, "Should use mainnet JB_TOKENS");
         assertEq(address(hook.DIRECTORY()), MAINNET_JB_DIRECTORY, "Should use mainnet JB_DIRECTORY");
-        assertEq(address(hook.CONTROLLER()), MAINNET_JB_CONTROLLER, "Should use mainnet JB_CONTROLLER");
         assertEq(address(hook.PRICES()), MAINNET_JB_PRICES, "Should use mainnet JB_PRICES");
         assertEq(address(hook.TERMINAL_STORE()), MAINNET_JB_TERMINAL_STORE, "Should use mainnet TERMINAL_STORE");
         assertEq(address(hook.V3_FACTORY()), MAINNET_V3_FACTORY, "Should use mainnet V3_FACTORY");
