@@ -21,7 +21,6 @@ contract DeployJBUniswapV4Hook is Script {
     // Default test addresses (override with environment variables)
     address constant DEFAULT_JB_TOKENS = 0x4d0Edd347FB1fA21589C1E109B3474924BE87636;
     address constant DEFAULT_JB_DIRECTORY = 0x0061E516886A0540F63157f112C0588eE0651dCF;
-    address constant DEFAULT_JB_CONTROLLER = 0x84dCD186F4c67798ed84e07dD01D1e7af8Ce4c43;
     address constant DEFAULT_JB_PRICES = 0x9b90E507cF6B7eB681A506b111f6f50245e614c4;
     address constant DEFAULT_JB_TERMINAL_STORE = 0xfE33B439Ec53748C87DcEDACb83f05aDd5014744;
 
@@ -76,7 +75,6 @@ contract DeployJBUniswapV4Hook is Script {
         // Get Juicebox addresses from environment or use defaults
         address jbTokens = vm.envOr("JB_TOKENS", DEFAULT_JB_TOKENS);
         address jbDirectory = vm.envOr("JB_DIRECTORY", DEFAULT_JB_DIRECTORY);
-        address jbController = vm.envOr("JB_CONTROLLER", DEFAULT_JB_CONTROLLER);
         address jbPrices = vm.envOr("JB_PRICES", DEFAULT_JB_PRICES);
         address jbTerminalStore = vm.envOr("JB_TERMINAL_STORE", DEFAULT_JB_TERMINAL_STORE);
         address v3Factory = vm.envOr("V3_FACTORY", getFactory());
@@ -90,7 +88,6 @@ contract DeployJBUniswapV4Hook is Script {
         console2.log("  Pool Manager:", poolManager);
         console2.log("  JB Tokens:", jbTokens);
         console2.log("  JB Directory:", jbDirectory);
-        console2.log("  JB Controller:", jbController);
         console2.log("  JB Prices:", jbPrices);
         console2.log("  JB Terminal Store:", jbTerminalStore);
         console2.log("  V3 Factory:", v3Factory);
@@ -128,7 +125,6 @@ contract DeployJBUniswapV4Hook is Script {
             IPoolManager(poolManager),
             IJBTokens(jbTokens),
             IJBDirectory(jbDirectory),
-            IJBController(jbController),
             IJBPrices(jbPrices),
             IJBTerminalStore(jbTerminalStore),
             IUniswapV3Factory(v3Factory),
@@ -149,7 +145,6 @@ contract DeployJBUniswapV4Hook is Script {
             IPoolManager(poolManager),
             IJBTokens(jbTokens),
             IJBDirectory(jbDirectory),
-            IJBController(jbController),
             IJBPrices(jbPrices),
             IJBTerminalStore(jbTerminalStore),
             IUniswapV3Factory(v3Factory),
