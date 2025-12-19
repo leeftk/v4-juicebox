@@ -123,9 +123,6 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
     /// @notice The Juicebox prices contract for currency conversion
     IJBPrices public immutable PRICES;
 
-    /// @notice The Juicebox terminal store for getting reclaimable surplus
-    IJBTerminalStore public immutable TERMINAL_STORE;
-
     /// @notice The Uniswap v3 factory for v3 pool lookups
     IUniswapV3Factory public immutable V3_FACTORY;
 
@@ -183,7 +180,6 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
     /// @param tokens The Juicebox tokens contract
     /// @param directory The Juicebox directory
     /// @param prices The Juicebox prices contract for currency conversion
-    /// @param terminalStore The Juicebox terminal store for getting reclaimable surplus
     /// @param v3Factory The Uniswap v3 factory for v3 pool lookups
     /// @param wrappedNativeEth The wrapped native ETH address for the current chain (e.g., WETH9 on mainnet, WETH on Base)
     constructor(
@@ -191,14 +187,12 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
         IJBTokens tokens,
         IJBDirectory directory,
         IJBPrices prices,
-        IJBTerminalStore terminalStore,
         IUniswapV3Factory v3Factory,
         address wrappedNativeEth
     ) BaseHook(poolManager) {
         TOKENS = tokens;
         DIRECTORY = directory;
         PRICES = prices;
-        TERMINAL_STORE = terminalStore;
         V3_FACTORY = v3Factory;
         WETH = wrappedNativeEth;
     }
@@ -306,8 +300,9 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
     /// @param projectId The Juicebox project ID
     /// @param tokenAmountIn The amount of JB tokens being sold
     /// @param outputToken The token to receive (e.g., ETH, USDC)
+    /// @param terminal The terminal from which the selling is happening.
     /// @return expectedOutput The expected amount of output tokens received
-    function calculateExpectedOutputFromSelling(uint256 projectId, uint256 tokenAmountIn, address outputToken)
+    function calculateExpectedOutputFromSelling(uint256 projectId, uint256 tokenAmountIn, address outputToken, IJBTerminal terminal)
         public
         view
         returns (uint256 expectedOutput)
@@ -315,14 +310,19 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
         // Normalize output token to Juicebox's native token representation
         outputToken = _normalizeToken(outputToken);
 
-        // Get the current reclaimable surplus for the project
-        // This represents how much value can be reclaimed for the given token amount
-        return TERMINAL_STORE.currentReclaimableSurplusOf(
-            projectId,
-            tokenAmountIn,
-            uint32(uint160(outputToken)), // the currency id of the output token
-            _getTokenDecimals(outputToken)
-        );
+        // Get the terminal store for the project 
+        try IJBMultiTerminal(terminal).STORE() returns (IJBTerminalStore store) {
+            // Get the current reclaimable surplus for the project
+            // This represents how much value can be reclaimed for the given token amount
+            return store.currentReclaimableSurplusOf(
+                projectId,
+                tokenAmountIn,
+                uint32(uint160(outputToken)), // the currency id of the output token
+                _getTokenDecimals(outputToken)
+            );
+        } catch {
+            return 0;
+        }
     }
 
     /// @notice Estimate expected output tokens from a Uniswap swap using TWAP
@@ -920,12 +920,19 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
 
         uint256 juiceboxExpectedOutput;
 
+        // Check if Juicebox is better than the best Uniswap option
+        // Only consider Juicebox if a valid terminal exists for the appropriate token
+        // For buying: terminal must support the payment token (tokenIn)
+        // For selling: terminal must have the output token (tokenOut) that we're cashing out to
+        address terminalToken = isBuyingJBToken ? tokenIn : tokenOut;
+        IJBTerminal jbTerminal = _getPrimaryTerminal(projectId, terminalToken);
+
         if (isBuyingJBToken) {
             // Buying JB tokens: compare Juicebox vs Uniswap for getting JB tokens
             juiceboxExpectedOutput = calculateExpectedTokensWithCurrency(projectId, tokenIn, amountIn);
         } else if (isSellingJBToken) {
             // Selling JB tokens: compare Juicebox vs Uniswap for getting output tokens
-            juiceboxExpectedOutput = calculateExpectedOutputFromSelling(projectId, amountIn, tokenOut);
+            juiceboxExpectedOutput = calculateExpectedOutputFromSelling(projectId, amountIn, tokenOut, jbTerminal);
         } else {
             // No JB token involved, proceed with normal Uniswap swap
             emit RouteSelected(poolId, false, 0);
@@ -960,12 +967,6 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
             bestRoute = "v3";
         }
 
-        // Check if Juicebox is better than the best Uniswap option
-        // Only consider Juicebox if a valid terminal exists for the appropriate token
-        // For buying: terminal must support the payment token (tokenIn)
-        // For selling: terminal must have the output token (tokenOut) that we're cashing out to
-        address terminalToken = isBuyingJBToken ? tokenIn : tokenOut;
-        IJBTerminal jbTerminal = _getPrimaryTerminal(projectId, terminalToken);
         bool jbTerminalAvailable = address(jbTerminal) != address(0) && address(jbTerminal).code.length > 0;
         bool juiceboxBetterThanUniswap = jbTerminalAvailable && juiceboxExpectedOutput > bestExpectedTokens;
         
