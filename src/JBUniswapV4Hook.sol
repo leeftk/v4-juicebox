@@ -311,7 +311,7 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
         outputToken = _normalizeToken(outputToken);
 
         // Get the terminal store for the project 
-        try IJBMultiTerminal(terminal).STORE() returns (IJBTerminalStore store) {
+        try IJBMultiTerminal(address(terminal)).STORE() returns (IJBTerminalStore store) {
             // Get the current reclaimable surplus for the project
             // This represents how much value can be reclaimed for the given token amount
             return store.currentReclaimableSurplusOf(

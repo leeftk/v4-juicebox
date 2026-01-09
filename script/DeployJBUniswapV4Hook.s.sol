@@ -126,7 +126,6 @@ contract DeployJBUniswapV4Hook is Script {
             IJBTokens(jbTokens),
             IJBDirectory(jbDirectory),
             IJBPrices(jbPrices),
-            IJBTerminalStore(jbTerminalStore),
             IUniswapV3Factory(v3Factory),
             wrappedNativeEth
         );
@@ -146,7 +145,6 @@ contract DeployJBUniswapV4Hook is Script {
             IJBTokens(jbTokens),
             IJBDirectory(jbDirectory),
             IJBPrices(jbPrices),
-            IJBTerminalStore(jbTerminalStore),
             IUniswapV3Factory(v3Factory),
             wrappedNativeEth
         );
