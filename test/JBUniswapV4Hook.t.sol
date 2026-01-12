@@ -35,6 +35,7 @@ import {
     IJBDirectory,
     IJBTerminalStore
 } from "../src/JBUniswapV4Hook.sol";
+import {IJBTerminal} from "@bananapus/core-v5/interfaces/IJBTerminal.sol";
 import {IUniswapV3Factory} from "../src/interfaces/IUniswapV3Factory.sol";
 import {JBRuleset} from "@bananapus/core-v5/structs/JBRuleset.sol";
 import {JBRulesetMetadata} from "@bananapus/core-v5/structs/JBRulesetMetadata.sol";
@@ -137,6 +138,10 @@ contract MockJBMultiTerminal {
 
     function setTerminalStore(address terminalStore) external {
         TERMINAL_STORE = MockJBTerminalStore(terminalStore);
+    }
+
+    function STORE() external view returns (IJBTerminalStore) {
+        return IJBTerminalStore(address(TERMINAL_STORE));
     }
 
     function setPayReturnAmount(uint256 amount) external {
@@ -684,7 +689,6 @@ contract JuiceboxHookTest is Test {
             IJBTokens(address(mockJBTokens)),
             IJBDirectory(address(mockJBDirectory)),
             IJBPrices(address(mockJBPrices)),
-            IJBTerminalStore(address(mockJBTerminalStore)),
             IUniswapV3Factory(address(mockV3Factory)),
             testWETH
         );
@@ -706,7 +710,6 @@ contract JuiceboxHookTest is Test {
             IJBTokens(address(mockJBTokens)),
             IJBDirectory(address(mockJBDirectory)),
             IJBPrices(address(mockJBPrices)),
-            IJBTerminalStore(address(mockJBTerminalStore)),
             IUniswapV3Factory(address(mockV3Factory)),
             testWETH
         );
@@ -2167,7 +2170,8 @@ contract JuiceboxHookTest is Test {
         mockJBTerminalStore.setSurplus(123, address(token1), 0.5 ether);
 
         // Calculate expected output from selling 1 ether of JB tokens
-        uint256 expectedOutput = hook.calculateExpectedOutputFromSelling(123, 1 ether, address(token1));
+        IJBTerminal terminal = IJBTerminal(address(mockJBDirectory.primaryTerminalOf(123, address(token1))));
+        uint256 expectedOutput = hook.calculateExpectedOutputFromSelling(123, 1 ether, address(token1), terminal);
 
         // Should return positive value
         assertGt(expectedOutput, 0, "Should calculate positive expected output");
@@ -2188,7 +2192,8 @@ contract JuiceboxHookTest is Test {
         mockJBTerminalStore.setSurplus(123, address(token1), surplusAmount);
 
         // Calculate expected output
-        uint256 expectedOutput = hook.calculateExpectedOutputFromSelling(123, tokenAmount, address(token1));
+        IJBTerminal terminal = IJBTerminal(address(mockJBDirectory.primaryTerminalOf(123, address(token1))));
+        uint256 expectedOutput = hook.calculateExpectedOutputFromSelling(123, tokenAmount, address(token1), terminal);
 
         // Should return positive value
         assertGt(expectedOutput, 0, "Should calculate positive expected output");
@@ -2448,7 +2453,6 @@ contract JuiceboxHookTest is Test {
             IJBTokens(address(mockJBTokens)),
             IJBDirectory(address(mockJBDirectory)),
             IJBPrices(address(mockJBPrices)),
-            IJBTerminalStore(address(mockJBTerminalStore)),
             IUniswapV3Factory(address(mockV3Factory)),
             address(mockWETH)
         );
@@ -2462,7 +2466,6 @@ contract JuiceboxHookTest is Test {
             IJBTokens(address(mockJBTokens)),
             IJBDirectory(address(mockJBDirectory)),
             IJBPrices(address(mockJBPrices)),
-            IJBTerminalStore(address(mockJBTerminalStore)),
             IUniswapV3Factory(address(mockV3Factory)),
             address(mockWETH)
         );
@@ -2509,7 +2512,6 @@ contract JuiceboxHookTest is Test {
             IJBTokens(address(mockJBTokens)),
             IJBDirectory(address(mockJBDirectory)),
             IJBPrices(address(mockJBPrices)),
-            IJBTerminalStore(address(mockJBTerminalStore)),
             IUniswapV3Factory(address(mockV3Factory)),
             address(mockWETH)
         );
@@ -2523,7 +2525,6 @@ contract JuiceboxHookTest is Test {
             IJBTokens(address(mockJBTokens)),
             IJBDirectory(address(mockJBDirectory)),
             IJBPrices(address(mockJBPrices)),
-            IJBTerminalStore(address(mockJBTerminalStore)),
             IUniswapV3Factory(address(mockV3Factory)),
             address(mockWETH)
         );

@@ -148,7 +148,6 @@ contract JBUniswapV4HookForkTest is Test {
             IJBTokens(MAINNET_JB_TOKENS),
             IJBDirectory(MAINNET_JB_DIRECTORY),
             IJBPrices(MAINNET_JB_PRICES),
-            IJBTerminalStore(MAINNET_JB_TERMINAL_STORE),
             IUniswapV3Factory(MAINNET_V3_FACTORY),
             WETH
         );
@@ -162,7 +161,6 @@ contract JBUniswapV4HookForkTest is Test {
             IJBTokens(MAINNET_JB_TOKENS),
             IJBDirectory(MAINNET_JB_DIRECTORY),
             IJBPrices(MAINNET_JB_PRICES),
-            IJBTerminalStore(MAINNET_JB_TERMINAL_STORE),
             IUniswapV3Factory(MAINNET_V3_FACTORY),
             WETH
         );
@@ -341,7 +339,6 @@ contract JBUniswapV4HookForkTest is Test {
         assertEq(address(hook.TOKENS()), MAINNET_JB_TOKENS, "Should use mainnet JB_TOKENS");
         assertEq(address(hook.DIRECTORY()), MAINNET_JB_DIRECTORY, "Should use mainnet JB_DIRECTORY");
         assertEq(address(hook.PRICES()), MAINNET_JB_PRICES, "Should use mainnet JB_PRICES");
-        assertEq(address(hook.TERMINAL_STORE()), MAINNET_JB_TERMINAL_STORE, "Should use mainnet TERMINAL_STORE");
         assertEq(address(hook.V3_FACTORY()), MAINNET_V3_FACTORY, "Should use mainnet V3_FACTORY");
     }
 
@@ -584,7 +581,15 @@ contract JBUniswapV4HookForkTest is Test {
             // Juicebox sell-path output (receive WETH when redeeming NANA)
             uint256 projectId = IJBTokens(MAINNET_JB_TOKENS).projectIdOf(IJBToken(NANA));
             if (projectId != 0) {
-                try hook.calculateExpectedOutputFromSelling(projectId, testAmount, WETH) returns (uint256 output) {
+                // Get terminal for the output token (WETH)
+                address normalizedWETH = address(0x000000000000000000000000000000000000EEEe);
+                IJBTerminal jbTerminal;
+                try IJBDirectory(MAINNET_JB_DIRECTORY).primaryTerminalOf(projectId, normalizedWETH) returns (IJBTerminal t) {
+                    jbTerminal = t;
+                } catch {
+                    jbTerminal = IJBTerminal(address(0));
+                }
+                try hook.calculateExpectedOutputFromSelling(projectId, testAmount, WETH, jbTerminal) returns (uint256 output) {
                     juiceboxOutput = output;
                 } catch {
                     juiceboxOutput = 0;
@@ -1087,7 +1092,15 @@ contract JBUniswapV4HookForkTest is Test {
         } catch {}
 
         uint256 jbOut = 0;
-        try hook.calculateExpectedOutputFromSelling(projectId, amountIn, WETH) returns (uint256 o) {
+        // Get terminal for the output token (WETH)
+        address normalizedWETH = address(0x000000000000000000000000000000000000EEEe);
+        IJBTerminal jbTerminal;
+        try IJBDirectory(MAINNET_JB_DIRECTORY).primaryTerminalOf(projectId, normalizedWETH) returns (IJBTerminal t) {
+            jbTerminal = t;
+        } catch {
+            jbTerminal = IJBTerminal(address(0));
+        }
+        try hook.calculateExpectedOutputFromSelling(projectId, amountIn, WETH, jbTerminal) returns (uint256 o) {
             jbOut = o;
         } catch {}
 
@@ -1334,11 +1347,6 @@ contract JBUniswapV4HookForkTest is Test {
             v4Out = o;
         } catch {}
 
-        uint256 jbOut = 0;
-        try hook.calculateExpectedOutputFromSelling(projectId, sellAmount, WETH) returns (uint256 o) {
-            jbOut = o;
-        } catch {}
-
         // Check for primary terminal that manages WETH (the output token when selling/cashing out)
         // When cashing out, we need a terminal that has the token we're cashing out TO (WETH), not the JB token (NANA)
         IJBTerminal jbTerminal;
@@ -1349,6 +1357,11 @@ contract JBUniswapV4HookForkTest is Test {
         } catch {
             jbTerminal = IJBTerminal(address(0));
         }
+        
+        uint256 jbOut = 0;
+        try hook.calculateExpectedOutputFromSelling(projectId, sellAmount, WETH, jbTerminal) returns (uint256 o) {
+            jbOut = o;
+        } catch {}
 
         // Require that terminal exists - if it doesn't, this is a test setup problem
         require(address(jbTerminal) != address(0), "Terminal must exist for this test");
