@@ -345,20 +345,23 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
             (sqrtPriceX96TWAP,,,) = poolManager.getSlot0(poolId);
         }
 
-        // Calculate Q192 = 2^192
-        uint256 Q192 = uint256(FixedPoint96.Q96) * FixedPoint96.Q96;
-        uint256 priceSquared = uint256(sqrtPriceX96TWAP) * sqrtPriceX96TWAP;
-
-        if (zeroForOne) {
-            // Selling token0 for token1
-            // price = token1/token0 = priceSquared / Q192
-            // estimatedOut = amountIn * price
-            estimatedOut = FullMath.mulDiv(amountIn, priceSquared, Q192);
+        // Calculate price ratio from sqrtPriceX96, handling overflow for large values.
+        // When sqrtPriceX96 <= type(uint128).max, we can square it directly (fits in uint256).
+        // Otherwise, use FullMath.mulDiv to avoid overflow, at the cost of reduced precision.
+        if (sqrtPriceX96TWAP <= type(uint128).max) {
+            uint256 ratioX192 = uint256(sqrtPriceX96TWAP) * sqrtPriceX96TWAP;
+            if (zeroForOne) {
+                estimatedOut = FullMath.mulDiv(amountIn, ratioX192, 1 << 192);
+            } else {
+                estimatedOut = FullMath.mulDiv(amountIn, 1 << 192, ratioX192);
+            }
         } else {
-            // Selling token1 for token0
-            // price = token0/token1 = Q192 / priceSquared
-            // estimatedOut = amountIn * price
-            estimatedOut = FullMath.mulDiv(amountIn, Q192, priceSquared);
+            uint256 ratioX128 = FullMath.mulDiv(sqrtPriceX96TWAP, sqrtPriceX96TWAP, 1 << 64);
+            if (zeroForOne) {
+                estimatedOut = FullMath.mulDiv(amountIn, ratioX128, 1 << 128);
+            } else {
+                estimatedOut = FullMath.mulDiv(amountIn, 1 << 128, ratioX128);
+            }
         }
 
         // Apply fee from pool key
