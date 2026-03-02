@@ -44,7 +44,7 @@ Uniswap V4 hook that automatically routes swaps involving Juicebox project token
 | `@uniswap/v4-core` | `IPoolManager`, `PoolKey`, `PoolId`, `StateLibrary`, `TickMath`, `FullMath`, `Currency`, `SwapParams`, `BeforeSwapDelta`, `BalanceDelta`, `Hooks` | V4 pool interaction, price math, hook framework |
 | `@uniswap/v4-periphery` | `BaseHook` | Hook base class with permission flags |
 | `@openzeppelin/uniswap-hooks` | `CurrencySettler` | Safe `settle()` / `take()` wrappers for V4 flash accounting |
-| `@bananapus/core-v5` | `IJBTokens`, `IJBDirectory`, `IJBController`, `IJBPrices`, `IJBTerminalStore`, `IJBMultiTerminal`, `IJBTerminal`, `JBRuleset`, `JBRulesetMetadataResolver`, `JBConstants` | Juicebox protocol: project token lookup, terminal routing, weight/price queries, pay/cashOut |
+| `@bananapus/core-v6` | `IJBTokens`, `IJBDirectory`, `IJBController`, `IJBPrices`, `IJBTerminalStore`, `IJBMultiTerminal`, `IJBTerminal`, `JBRuleset`, `JBRulesetMetadataResolver`, `JBConstants` | Juicebox protocol: project token lookup, terminal routing, weight/price queries, pay/cashOut |
 | `@openzeppelin/contracts` | `IERC20`, `IERC20Metadata`, `SafeERC20` | Token transfers and decimal queries |
 
 ## Key Types
@@ -69,7 +69,7 @@ Uniswap V4 hook that automatically routes swaps involving Juicebox project token
 
 ```solidity
 // Deploying a V4 pool with the JBUniswapV4Hook
-import {JBUniswapV4Hook} from "nana-uni-v4-util-v5/src/JBUniswapV4Hook.sol";
+import {JBUniswapV4Hook} from "nana-uni-v4-util-v6/src/JBUniswapV4Hook.sol";
 import {PoolKey} from "@uniswap/v4-core/src/types/PoolKey.sol";
 import {Currency} from "@uniswap/v4-core/src/types/Currency.sol";
 
