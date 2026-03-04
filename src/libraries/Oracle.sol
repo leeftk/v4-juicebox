@@ -10,12 +10,12 @@ pragma solidity ^0.8.19;
 /// The most recent observation is available, independent of the length of the oracle array, by passing 0 to observe()
 library Oracle {
     /// @notice Thrown when trying to interact with an Oracle of a non-initialized pool
-    error OracleCardinalityCannotBeZero();
+    error Oracle_CardinalityCannotBeZero();
 
     /// @notice Thrown when trying to observe a price that is older than the oldest recorded price
     /// @param oldestTimestamp Timestamp of the oldest remaining observation
     /// @param targetTimestamp Invalid timestamp targeted to be observed
-    error TargetPredatesOldestObservation(uint32 oldestTimestamp, uint32 targetTimestamp);
+    error Oracle_TargetPredatesOldestObservation(uint32 oldestTimestamp, uint32 targetTimestamp);
 
     /// @notice This is the max amount of ticks in either direction that the pool is allowed without triggering a backrun
     int24 constant MIN_ABS_TICK_MOVE = 912;
@@ -128,7 +128,7 @@ library Oracle {
     /// @return next The next cardinality which will be populated in the oracle array
     function grow(Observation[65535] storage self, uint16 current, uint16 next) internal returns (uint16) {
         unchecked {
-            if (current == 0) revert OracleCardinalityCannotBeZero();
+            if (current == 0) revert Oracle_CardinalityCannotBeZero();
             // no-op if the passed next value isn't greater than the current next value
             if (next <= current) return current;
             // store in each slot to prevent fresh SSTOREs in swaps
@@ -246,7 +246,7 @@ library Oracle {
 
             // ensure that the target is chronologically at or after the oldest observation
             if (!lte(time, beforeOrAt.blockTimestamp, target)) {
-                revert TargetPredatesOldestObservation(beforeOrAt.blockTimestamp, target);
+                revert Oracle_TargetPredatesOldestObservation(beforeOrAt.blockTimestamp, target);
             }
 
             // if we've reached this point, we have to binary search
@@ -336,7 +336,7 @@ library Oracle {
         uint16 cardinality
     ) internal view returns (int48[] memory tickCumulatives, uint144[] memory secondsPerLiquidityCumulativeX128s) {
         unchecked {
-            if (cardinality == 0) revert OracleCardinalityCannotBeZero();
+            if (cardinality == 0) revert Oracle_CardinalityCannotBeZero();
 
             tickCumulatives = new int48[](secondsAgos.length);
             secondsPerLiquidityCumulativeX128s = new uint144[](secondsAgos.length);

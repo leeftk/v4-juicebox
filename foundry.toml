@@ -1,18 +1,36 @@
 [profile.default]
-evm_version = "cancun"
-ffi = true
-fs_permissions = [
-    {access = "read-write", path = ".forge-snapshots/"},
-    {access = "read", path = "../nana/"}
-]
-libs = ["lib"]
-out = "out"
-# solc_version = "0.8.26"  # Commented out to allow auto-detection of versions from pragma statements
-src = "src"
-via_ir = true
+evm_version = 'cancun'
+sizes = true
+verbosity = 3
 optimizer = true
 optimizer_runs = 200
+libs = ["node_modules", "lib"]
+extra_output = ['storageLayout']
+fs_permissions = [{ access = "read-write", path = "./"}]
+via_ir = true
 
 [rpc_endpoints]
-mainnet = "${MAINNET_RPC_URL}"
+ethereum = "${RPC_ETHEREUM_MAINNET}"
+optimism = "${RPC_OPTIMISM_MAINNET}"
+arbitrum = "${RPC_ARBITRUM_MAINNET}"
+base = "${RPC_BASE_MAINNET}"
+arbitrum_sepolia = "${RPC_ARBITRUM_SEPOLIA}"
+ethereum_sepolia = "${RPC_ETHEREUM_SEPOLIA}"
+optimism_sepolia = "${RPC_OPTIMISM_SEPOLIA}"
+base_sepolia = "${RPC_BASE_SEPOLIA}"
+celo = "${RPC_CELO_MAINNET}"
+celo_sepolia = "${RPC_CELO_SEPOLIA}"
 
+[profile.ci_sizes]
+optimizer_runs = 200
+
+[invariant]
+fail_on_revert = false
+
+[fuzz]
+runs = 1024
+
+[fmt]
+number_underscore = "thousands"
+multiline_func_header = "all"
+wrap_comments = true
