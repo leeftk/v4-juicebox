@@ -8,11 +8,11 @@ import {Hooks} from "@uniswap/v4-core/src/libraries/Hooks.sol";
 import {HookMiner} from "@uniswap/v4-periphery/src/utils/HookMiner.sol";
 
 import {JBUniswapV4Hook} from "../src/JBUniswapV4Hook.sol";
-import {IJBTokens} from "@bananapus/core-v5/interfaces/IJBTokens.sol";
-import {IJBDirectory} from "@bananapus/core-v5/interfaces/IJBDirectory.sol";
-import {IJBController} from "@bananapus/core-v5/interfaces/IJBController.sol";
-import {IJBPrices} from "@bananapus/core-v5/interfaces/IJBPrices.sol";
-import {IJBTerminalStore} from "@bananapus/core-v5/interfaces/IJBTerminalStore.sol";
+import {IJBTokens} from "@bananapus/core-v6/interfaces/IJBTokens.sol";
+import {IJBDirectory} from "@bananapus/core-v6/interfaces/IJBDirectory.sol";
+import {IJBController} from "@bananapus/core-v6/interfaces/IJBController.sol";
+import {IJBPrices} from "@bananapus/core-v6/interfaces/IJBPrices.sol";
+import {IJBTerminalStore} from "@bananapus/core-v6/interfaces/IJBTerminalStore.sol";
 import {IUniswapV3Factory} from "../src/interfaces/IUniswapV3Factory.sol";
 
 /// @title DeployJBUniswapV4Hook

@@ -31,11 +31,11 @@ import {
     IJBDirectory,
     IJBTerminalStore
 } from "../src/JBUniswapV4Hook.sol";
-import {IJBTerminal} from "@bananapus/core-v5/interfaces/IJBTerminal.sol";
-import {IJBMultiTerminal} from "@bananapus/core-v5/interfaces/IJBMultiTerminal.sol";
-import {IJBToken} from "@bananapus/core-v5/interfaces/IJBToken.sol";
-import {JBRuleset} from "@bananapus/core-v5/structs/JBRuleset.sol";
-import {JBRulesetMetadata} from "@bananapus/core-v5/structs/JBRulesetMetadata.sol";
+import {IJBTerminal} from "@bananapus/core-v6/interfaces/IJBTerminal.sol";
+import {IJBMultiTerminal} from "@bananapus/core-v6/interfaces/IJBMultiTerminal.sol";
+import {IJBToken} from "@bananapus/core-v6/interfaces/IJBToken.sol";
+import {JBRuleset} from "@bananapus/core-v6/structs/JBRuleset.sol";
+import {JBRulesetMetadata} from "@bananapus/core-v6/structs/JBRulesetMetadata.sol";
 import {IUniswapV3Factory} from "../src/interfaces/IUniswapV3Factory.sol";
 import {IUniswapV3Pool} from "../src/interfaces/IUniswapV3Pool.sol";
 import {HookMiner} from "@uniswap/v4-periphery/src/utils/HookMiner.sol";
