@@ -1,16 +1,19 @@
-name: Test Suite
+name: CI
 
 on:
+  push:
+  pull_request:
   workflow_dispatch:
-  # push:
-  # pull_request:
 
 env:
   FOUNDRY_PROFILE: ci
 
 jobs:
-  test:
-    name: Foundry Project
+  check:
+    strategy:
+      fail-fast: true
+
+    name: Foundry project
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -22,13 +25,21 @@ jobs:
         with:
           version: stable
 
-      - name: Build
+      - name: Show Forge version
         run: |
           forge --version
+
+      - name: Run Forge fmt
+        run: |
+          forge fmt --check
+        id: fmt
+
+      - name: Run Forge build
+        run: |
           forge build --sizes
         id: build
 
-      - name: Test
+      - name: Run Forge tests
         run: |
           forge test -vvv
         id: test
