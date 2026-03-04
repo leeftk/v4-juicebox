@@ -34,12 +34,12 @@ import {
     IJBDirectory,
     IJBTerminalStore
 } from "../src/JBUniswapV4Hook.sol";
-import {IJBTerminal} from "@bananapus/core-v5/interfaces/IJBTerminal.sol";
+import {IJBTerminal} from "@bananapus/core-v6/interfaces/IJBTerminal.sol";
 import {IUniswapV3Factory} from "../src/interfaces/IUniswapV3Factory.sol";
-import {JBRuleset} from "@bananapus/core-v5/structs/JBRuleset.sol";
-import {JBRulesetMetadata} from "@bananapus/core-v5/structs/JBRulesetMetadata.sol";
-import {JBRulesetMetadataResolver} from "@bananapus/core-v5/libraries/JBRulesetMetadataResolver.sol";
-import {IJBRulesetApprovalHook} from "@bananapus/core-v5/interfaces/IJBRulesetApprovalHook.sol";
+import {JBRuleset} from "@bananapus/core-v6/structs/JBRuleset.sol";
+import {JBRulesetMetadata} from "@bananapus/core-v6/structs/JBRulesetMetadata.sol";
+import {JBRulesetMetadataResolver} from "@bananapus/core-v6/libraries/JBRulesetMetadataResolver.sol";
+import {IJBRulesetApprovalHook} from "@bananapus/core-v6/interfaces/IJBRulesetApprovalHook.sol";
 import {HookMiner} from "@uniswap/v4-periphery/src/utils/HookMiner.sol";
 
 // ============================================================

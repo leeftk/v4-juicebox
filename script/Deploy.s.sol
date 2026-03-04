@@ -8,9 +8,9 @@ import {Hooks} from "@uniswap/v4-core/src/libraries/Hooks.sol";
 import {HookMiner} from "@uniswap/v4-periphery/src/utils/HookMiner.sol";
 
 import {JBUniswapV4Hook} from "src/JBUniswapV4Hook.sol";
-import {IJBTokens} from "@bananapus/core-v5/interfaces/IJBTokens.sol";
-import {IJBDirectory} from "@bananapus/core-v5/interfaces/IJBDirectory.sol";
-import {IJBPrices} from "@bananapus/core-v5/interfaces/IJBPrices.sol";
+import {IJBTokens} from "@bananapus/core-v6/interfaces/IJBTokens.sol";
+import {IJBDirectory} from "@bananapus/core-v6/interfaces/IJBDirectory.sol";
+import {IJBPrices} from "@bananapus/core-v6/interfaces/IJBPrices.sol";
 import {IUniswapV3Factory} from "src/interfaces/IUniswapV3Factory.sol";
 
 contract DeployScript is Script {
@@ -32,7 +32,7 @@ contract DeployScript is Script {
         // NOTE: CoreDeploymentLib can't be used directly (pragma 0.8.23 vs ^0.8.24).
         // We inline the same JSON-reading pattern here.
         string memory basePath =
-            vm.envOr("NANA_CORE_DEPLOYMENT_PATH", string("node_modules/@bananapus/core-v5/deployments/"));
+            vm.envOr("NANA_CORE_DEPLOYMENT_PATH", string("node_modules/@bananapus/core-v6/deployments/"));
         string memory networkName = _getNetworkName();
 
         jbDirectory = _getCoreAddress(basePath, networkName, "JBDirectory");
@@ -132,7 +132,7 @@ contract DeployScript is Script {
         string memory contractName
     ) internal view returns (address) {
         string memory json = vm.readFile(
-            string.concat(basePath, "nana-core-v5/", networkName, "/", contractName, ".json")
+            string.concat(basePath, "nana-core-v6/", networkName, "/", contractName, ".json")
         );
         return stdJson.readAddress(json, ".address");
     }

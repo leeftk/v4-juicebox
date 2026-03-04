@@ -37,20 +37,20 @@ import {IUniswapV3SwapCallback} from "../lib/v3-core/contracts/interfaces/callba
 import {Oracle} from "./libraries/Oracle.sol";
 
 // Import Juicebox protocol interfaces
-import {IJBTokens} from "@bananapus/core-v5/interfaces/IJBTokens.sol";
-import {IJBToken} from "@bananapus/core-v5/interfaces/IJBToken.sol";
-import {IJBDirectory} from "@bananapus/core-v5/interfaces/IJBDirectory.sol";
-import {IJBMultiTerminal} from "@bananapus/core-v5/interfaces/IJBMultiTerminal.sol";
-import {IJBController} from "@bananapus/core-v5/interfaces/IJBController.sol";
-import {IJBTerminal} from "@bananapus/core-v5/interfaces/IJBTerminal.sol";
+import {IJBTokens} from "@bananapus/core-v6/interfaces/IJBTokens.sol";
+import {IJBToken} from "@bananapus/core-v6/interfaces/IJBToken.sol";
+import {IJBDirectory} from "@bananapus/core-v6/interfaces/IJBDirectory.sol";
+import {IJBMultiTerminal} from "@bananapus/core-v6/interfaces/IJBMultiTerminal.sol";
+import {IJBController} from "@bananapus/core-v6/interfaces/IJBController.sol";
+import {IJBTerminal} from "@bananapus/core-v6/interfaces/IJBTerminal.sol";
 
-import {IJBPrices} from "@bananapus/core-v5/interfaces/IJBPrices.sol";
-import {IJBTerminalStore} from "@bananapus/core-v5/interfaces/IJBTerminalStore.sol";
+import {IJBPrices} from "@bananapus/core-v6/interfaces/IJBPrices.sol";
+import {IJBTerminalStore} from "@bananapus/core-v6/interfaces/IJBTerminalStore.sol";
 
-import {JBRuleset} from "@bananapus/core-v5/structs/JBRuleset.sol";
-import {JBRulesetMetadata} from "@bananapus/core-v5/structs/JBRulesetMetadata.sol";
-import {JBRulesetMetadataResolver} from "@bananapus/core-v5/libraries/JBRulesetMetadataResolver.sol";
-import {JBConstants} from "@bananapus/core-v5/libraries/JBConstants.sol";
+import {JBRuleset} from "@bananapus/core-v6/structs/JBRuleset.sol";
+import {JBRulesetMetadata} from "@bananapus/core-v6/structs/JBRulesetMetadata.sol";
+import {JBRulesetMetadataResolver} from "@bananapus/core-v6/libraries/JBRulesetMetadataResolver.sol";
+import {JBConstants} from "@bananapus/core-v6/libraries/JBConstants.sol";
 
 
 /// @title JBUniswapV4Hook
