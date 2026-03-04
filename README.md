@@ -2,6 +2,14 @@
 
 Uniswap V4 hook that intelligently routes swaps between V4 pools, V3 pools, and Juicebox project minting/cash-out to give users the best price, with TWAP oracle protection against manipulation.
 
+## Overview
+
+When a Juicebox project token is traded on Uniswap V4, the `JBUniswapV4Hook` intercepts the swap and compares prices from three sources: the V4 pool itself, any existing V3 pool for the same pair, and Juicebox's native minting/cash-out mechanism. It routes to whichever gives the user the most tokens. This ensures Juicebox project tokens always trade at or above their intrinsic treasury-backed value.
+
+The hook maintains its own TWAP (Time-Weighted Average Price) oracle to protect against price manipulation. For V4 it uses a 30-minute lookback; for V3 routing it uses a 1-hour lookback. When insufficient historical data is available, it falls back to spot price.
+
+The contract is immutable after deployment — no admin functions, no upgradeability. All parameters are constants or immutable constructor arguments.
+
 ## Architecture
 
 | Contract | Description |
