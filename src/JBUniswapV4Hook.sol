@@ -270,7 +270,7 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
             baseCurrencyPerPaymentToken = 1e18;
         } else {
             // Different currencies - need price conversion
-            try PRICES.pricePerUnitOf(projectId, baseCurrency, paymentCurrencyId, 18) returns (uint256 price) {
+            try PRICES.pricePerUnitOf({projectId: projectId, pricingCurrency: baseCurrency, unitCurrency: paymentCurrencyId, decimals: 18}) returns (uint256 price) {
                 baseCurrencyPerPaymentToken = price;
             } catch {
                 return 0;
@@ -278,9 +278,9 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
         }
 
         // Calculate tokens based on the payment amount and weight.
-        uint256 estimatedTokens = _calculateTokensWithCurrency(
-            tokensPerBaseCurrency, paymentAmount, paymentTokenDecimals, baseCurrencyPerPaymentToken
-        );
+        uint256 estimatedTokens = _calculateTokensWithCurrency({
+            tokensPerBaseCurrency: tokensPerBaseCurrency, paymentAmount: paymentAmount, paymentTokenDecimals: paymentTokenDecimals, baseCurrencyPerPaymentToken: baseCurrencyPerPaymentToken
+        });
 
         // Apply reserved rate: beneficiary only receives (1 - reservedPercent) of tokens
         // Reserved tokens go to team/contributors, not to the payer
@@ -397,11 +397,11 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
 
         // Get tick cumulative for current time
         (int48 tickCumulativeCurrent,) =
-            observations[poolId].observeSingle(currentTime, 0, tick, index, liquidity, cardinality);
+            observations[poolId].observeSingle({time: currentTime, secondsAgo: 0, tick: tick, index: index, liquidity: liquidity, cardinality: cardinality});
 
         // Get tick cumulative for secondsAgo
         (int48 tickCumulativePast,) =
-            observations[poolId].observeSingle(currentTime, secondsAgo, tick, index, liquidity, cardinality);
+            observations[poolId].observeSingle({time: currentTime, secondsAgo: secondsAgo, tick: tick, index: index, liquidity: liquidity, cardinality: cardinality});
 
         // Calculate arithmetic mean tick
         arithmeticMeanTick = int24(
@@ -423,7 +423,7 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
         // Determine input/output tokens based on swap direction
         address inputToken = zeroForOne ? token0 : token1;
         address outputToken = zeroForOne ? token1 : token0;
-        estimatedOut = _getQuote(outputToken, amountIn, inputToken);
+        estimatedOut = _getQuote({projectToken: outputToken, amountIn: amountIn, terminalToken: inputToken});
         return estimatedOut;
     }
 
@@ -439,7 +439,7 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
     {
         // Get a reference to the pool that'll be used to make the swap.
         address v3Pool;
-        try V3_FACTORY.getPool(projectToken, terminalToken, 10000) returns (address poolAddr) {
+        try V3_FACTORY.getPool({tokenA: projectToken, tokenB: terminalToken, fee: 10000}) returns (address poolAddr) {
             v3Pool = poolAddr;
         } catch {
             return 0;
@@ -487,7 +487,7 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
                 return 0;
             }
         } else {
-            try this._consult(pool, uint32(twapWindow)) returns (int24 tick, uint128 liq) {
+            try this._consult({pool: pool, secondsAgo: uint32(twapWindow)}) returns (int24 tick, uint128 liq) {
                 arithmeticMeanTick = tick;
                 liquidity = liq;
             } catch {
@@ -622,7 +622,7 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
 
         // Observe the TWAP
         int24 arithmeticMeanTick =
-            this.observeTWAP(poolId, TWAP_PERIOD, tick, state.index, liquidity, state.cardinality);
+            this.observeTWAP({poolId: poolId, secondsAgo: TWAP_PERIOD, tick: tick, index: state.index, liquidity: liquidity, cardinality: state.cardinality});
 
         // Convert tick to sqrtPriceX96
         return TickMath.getSqrtPriceAtTick(arithmeticMeanTick);
@@ -635,7 +635,7 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
     function _createSwapDelta(uint256 amountIn, uint256 amountOut) internal pure returns (BeforeSwapDelta) {
         // The hook takes the input amount and settles the output amount
         // For both buying and selling: take inputCurrency, settle outputCurrency
-        return toBeforeSwapDelta(int128(uint128(amountIn)), -int128(uint128(amountOut)));
+        return toBeforeSwapDelta({deltaSpecified: int128(uint128(amountIn)), deltaUnspecified: -int128(uint128(amountOut))});
     }
 
     /// @notice Settles output tokens back to PoolManager
@@ -647,7 +647,7 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
         // Use CurrencySettler library to ensure correct settlement order and flash-accounting safety
         // payer = address(this) since we're settling tokens we received
         // burn = false since we're transferring ERC-20 tokens, not burning ERC-6909 tokens
-        CurrencySettler.settle(outputCurrency, poolManager, address(this), amount, false);
+        CurrencySettler.settle({currency: outputCurrency, poolManager: poolManager, payer: address(this), amount: amount, burn: false});
     }
 
     /// @notice Normalizes a token address to Juicebox's native token representation for pricing
@@ -727,7 +727,7 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
         // Only normalize native ETH to JB_NATIVE_TOKEN for terminal lookup
         // WETH is only used when routing through v3, not when routing through Juicebox
         address normalized = _normalizeTokenForTerminal(token);
-        try DIRECTORY.primaryTerminalOf(projectId, normalized) returns (IJBTerminal t) {
+        try DIRECTORY.primaryTerminalOf({projectId: projectId, token: normalized}) returns (IJBTerminal t) {
             return t;
         } catch {
             return IJBTerminal(address(0));
@@ -760,7 +760,7 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
         PoolId poolId = key.toId();
 
         // Initialize oracle with first observation
-        (uint16 cardinality, uint16 cardinalityNext) = observations[poolId].initialize(uint32(block.timestamp), tick);
+        (uint16 cardinality, uint16 cardinalityNext) = observations[poolId].initialize({time: uint32(block.timestamp), tick: tick});
 
         states[poolId] = ObservationState({index: 0, cardinality: cardinality, cardinalityNext: cardinalityNext});
 
@@ -789,12 +789,12 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
                 : (state.cardinalityNext < 256 ? 256 : state.cardinalityNext);
 
             // Grow the oracle array
-            newCardinalityNext = observations[poolId].grow(state.cardinalityNext, targetCardinality);
+            newCardinalityNext = observations[poolId].grow({current: state.cardinalityNext, next: targetCardinality});
         }
 
         // Write new observation
         (uint16 indexUpdated, uint16 cardinalityUpdated) = observations[poolId]
-        .write(state.index, uint32(block.timestamp), tick, liquidity, state.cardinality, newCardinalityNext);
+        .write({index: state.index, blockTimestamp: uint32(block.timestamp), tick: tick, liquidity: liquidity, cardinality: state.cardinality, cardinalityNext: newCardinalityNext});
 
         // Update state
         states[poolId] = ObservationState({
@@ -928,14 +928,14 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
         // For buying: terminal must support the payment token (tokenIn)
         // For selling: terminal must have the output token (tokenOut) that we're cashing out to
         address terminalToken = isBuyingJBToken ? tokenIn : tokenOut;
-        IJBTerminal jbTerminal = _getPrimaryTerminal(projectId, terminalToken);
+        IJBTerminal jbTerminal = _getPrimaryTerminal({projectId: projectId, token: terminalToken});
 
         if (isBuyingJBToken) {
             // Buying JB tokens: compare Juicebox vs Uniswap for getting JB tokens
-            juiceboxExpectedOutput = calculateExpectedTokensWithCurrency(projectId, tokenIn, amountIn);
+            juiceboxExpectedOutput = calculateExpectedTokensWithCurrency({projectId: projectId, paymentToken: tokenIn, paymentAmount: amountIn});
         } else if (isSellingJBToken) {
             // Selling JB tokens: compare Juicebox vs Uniswap for getting output tokens
-            juiceboxExpectedOutput = calculateExpectedOutputFromSelling(projectId, amountIn, tokenOut, jbTerminal);
+            juiceboxExpectedOutput = calculateExpectedOutputFromSelling({projectId: projectId, tokenAmountIn: amountIn, outputToken: tokenOut, terminal: jbTerminal});
         } else {
             // No JB token involved, proceed with normal Uniswap swap
             emit RouteSelected(poolId, false, 0);
@@ -943,15 +943,15 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
         }
 
         // Calculate how many tokens we'd get from Uniswap v4
-        uint256 uniswapV4ExpectedTokens = estimateUniswapOutput(poolId, key, amountIn, params.zeroForOne);
+        uint256 uniswapV4ExpectedTokens = estimateUniswapOutput({poolId: poolId, key: key, amountIn: amountIn, zeroForOne: params.zeroForOne});
 
         // Calculate expected output from Uniswap v3 (convert native ETH to WETH for v3)
         address v3TokenIn = _convertToV3Token(tokenIn);
         address v3TokenOut = _convertToV3Token(tokenOut);
         // Determine v3 swap direction based on token ordering (v3 uses token0 < token1)
-        (address v3Token0, address v3Token1, bool v3ZeroForOne) = _getTokenOrdering(v3TokenIn, v3TokenOut);
+        (address v3Token0, address v3Token1, bool v3ZeroForOne) = _getTokenOrdering({tokenA: v3TokenIn, tokenB: v3TokenOut});
         uint256 uniswapV3ExpectedTokens;
-        try this.estimateUniswapV3Output(v3Token0, v3Token1, amountIn, v3ZeroForOne) returns (uint256 tokens) {
+        try this.estimateUniswapV3Output({token0: v3Token0, token1: v3Token1, amountIn: amountIn, zeroForOne: v3ZeroForOne}) returns (uint256 tokens) {
             uniswapV3ExpectedTokens = tokens;
         } catch {
             uniswapV3ExpectedTokens = 0;
@@ -988,9 +988,9 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
             // Execute Juicebox routing (works for both buying and selling)
             // JB terminal enforces amountOutMin internally via minReturnedTokens/minTokensReclaimed
             uint256 outputReceived =
-                _routeThroughJuicebox(projectId, inputCurrency, outputCurrency, amountIn, isBuyingJBToken, jbTerminal, amountOutMin);
+                _routeThroughJuicebox({projectId: projectId, inputCurrency: inputCurrency, outputCurrency: outputCurrency, amountIn: amountIn, isBuying: isBuyingJBToken, terminal: jbTerminal, amountOutMin: amountOutMin});
 
-            return (BaseHook.beforeSwap.selector, _createSwapDelta(amountIn, outputReceived), 0);
+            return (BaseHook.beforeSwap.selector, _createSwapDelta({amountIn: amountIn, amountOut: outputReceived}), 0);
         }
 
         if (v3BetterThanV4 && uniswapV3ExpectedTokens > 0) {
@@ -998,14 +998,14 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
             emit RouteSelected(poolId, false, uniswapV3ExpectedTokens);
 
             uint256 outputReceived =
-                _routeThroughV3(v3Token0, v3Token1, amountIn, v3ZeroForOne, tokenIn, tokenOut);
+                _routeThroughV3({token0: v3Token0, token1: v3Token1, amountIn: amountIn, zeroForOne: v3ZeroForOne, originalTokenIn: tokenIn, originalTokenOut: tokenOut});
 
             // Enforce amountOutMin guarantee
             if (outputReceived < amountOutMin) {
                 revert JBUniswapV4Hook_InsufficientOutput();
             }
 
-            return (BaseHook.beforeSwap.selector, _createSwapDelta(amountIn, outputReceived), 0);
+            return (BaseHook.beforeSwap.selector, _createSwapDelta({amountIn: amountIn, amountOut: outputReceived}), 0);
         }
 
         // Proceed with normal v4 swap
@@ -1037,7 +1037,7 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
 
         // Terminal is already validated by caller
         // Take input from PoolManager (pre-deposited by JuiceboxSwapRouter)
-        poolManager.take(inputCurrency, address(this), amountIn);
+        poolManager.take({currency: inputCurrency, to: address(this), amount: amountIn});
 
         // Normalize token for Juicebox terminal interaction
         // Only normalize native ETH to JB_NATIVE_TOKEN (WETH only appears when routing through v3)
@@ -1054,34 +1054,34 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
             uint256 payValue = inputCurrency.isAddressZero() ? amountIn : 0;
             outputReceived = terminal.pay{
                 value: payValue
-            }(
-                projectId,
-                normalizedTokenIn, // Native ETH → JB_NATIVE_TOKEN
-                amountIn,
-                address(this), // Tokens come to hook
-                amountOutMin, // Minimum tokens required (enforced by JB terminal)
-                "", // Empty memo
-                bytes("") // Empty metadata
-            );
+            }({
+                projectId: projectId,
+                token: normalizedTokenIn, // Native ETH → JB_NATIVE_TOKEN
+                amount: amountIn,
+                beneficiary: address(this), // Tokens come to hook
+                minReturnedTokens: amountOutMin, // Minimum tokens required (enforced by JB terminal)
+                memo: "", // Empty memo
+                metadata: bytes("") // Empty metadata
+            });
         } else {
             // Selling JB tokens: Cash out JB tokens and receive output currency
             // Only normalize native ETH to JB_NATIVE_TOKEN (WETH only appears when routing through v3)
             address normalizedTokenOut = _normalizeTokenForTerminal(tokenOut);
             // Call the terminal's cash out function to get the output tokens
             outputReceived = IJBMultiTerminal(address(terminal))
-                .cashOutTokensOf(
-                    address(this), // holder (hook owns the JB tokens)
-                    projectId,
-                    amountIn, // cashOutCount: Amount of JB tokens to cash out
-                    normalizedTokenOut, // Native ETH → JB_NATIVE_TOKEN
-                    amountOutMin, // minTokensReclaimed: Minimum tokens required (enforced by JB terminal)
-                    payable(address(this)), // beneficiary (hook)
-                    bytes("") // Empty metadata
-                );
+                .cashOutTokensOf({
+                    holder: address(this), // holder (hook owns the JB tokens)
+                    projectId: projectId,
+                    cashOutCount: amountIn, // Amount of JB tokens to cash out
+                    tokenToReclaim: normalizedTokenOut, // Native ETH → JB_NATIVE_TOKEN
+                    minTokensReclaimed: amountOutMin, // Minimum tokens required (enforced by JB terminal)
+                    beneficiary: payable(address(this)), // beneficiary (hook)
+                    metadata: bytes("") // Empty metadata
+                });
         }
 
         // Settle output back to PoolManager
-        _settleOutput(outputCurrency, outputReceived);
+        _settleOutput({outputCurrency: outputCurrency, amount: outputReceived});
 
         return outputReceived;
     }
@@ -1103,7 +1103,7 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
         address originalTokenOut
     ) internal returns (uint256 outputReceived) {
         // Get the v3 pool (10000 fee tier)
-        address v3Pool = V3_FACTORY.getPool(token0, token1, 10000);
+        address v3Pool = V3_FACTORY.getPool({tokenA: token0, tokenB: token1, fee: 10000});
         if (v3Pool == address(0)) revert JBUniswapV4Hook_V3PoolNotFound();
 
         // Check pool is unlocked
@@ -1116,7 +1116,7 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
 
         // Take input from PoolManager (may be native ETH)
         Currency inputCurrency = Currency.wrap(originalTokenIn);
-        poolManager.take(inputCurrency, address(this), amountIn);
+        poolManager.take({currency: inputCurrency, to: address(this), amount: amountIn});
 
         // If input is native ETH, wrap it to WETH for v3 swap
         // WETH will be minted to this contract's balance
@@ -1129,13 +1129,13 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
         // v3 swap parameters: recipient, zeroForOne, amountSpecified, sqrtPriceLimitX96, data
         // The swap will call uniswapV3SwapCallback during execution
         (int256 amount0Delta, int256 amount1Delta) = IUniswapV3Pool(v3Pool)
-            .swap(
-                address(this), // recipient
-                zeroForOne,
-                int256(amountIn), // amountSpecified (positive for exact input)
-                zeroForOne ? V3_MIN_SQRT_RATIO + 1 : V3_MAX_SQRT_RATIO - 1,
-                abi.encode(token0, token1, uint24(10000)) // data for callback validation
-            );
+            .swap({
+                recipient: address(this),
+                zeroForOne: zeroForOne,
+                amountSpecified: int256(amountIn), // positive for exact input
+                sqrtPriceLimitX96: zeroForOne ? V3_MIN_SQRT_RATIO + 1 : V3_MAX_SQRT_RATIO - 1,
+                data: abi.encode(token0, token1, uint24(10000)) // data for callback validation
+            });
 
         // Calculate output received (one of the deltas will be negative, the other positive)
         if (zeroForOne) {
@@ -1157,7 +1157,7 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
         }
 
         // Settle output back to PoolManager
-        _settleOutput(outputCurrency, outputReceived);
+        _settleOutput({outputCurrency: outputCurrency, amount: outputReceived});
         return outputReceived;
     }
 
@@ -1173,7 +1173,7 @@ contract JBUniswapV4Hook is BaseHook, IUniswapV3SwapCallback {
 
         // Validate callback - ensure msg.sender is a valid v3 pool from the factory
         // Check via factory's getPool method (works for both real and mock factories)
-        address expectedPool = V3_FACTORY.getPool(token0, token1, fee);
+        address expectedPool = V3_FACTORY.getPool({tokenA: token0, tokenB: token1, fee: fee});
         if (msg.sender != expectedPool || expectedPool == address(0)) revert JBUniswapV4Hook_InvalidCallback();
 
         // Determine which token to pay (one delta will be positive)

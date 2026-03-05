@@ -117,7 +117,7 @@ library Oracle {
             }
 
             indexUpdated = (index + 1) % cardinalityUpdated;
-            self[indexUpdated] = transform(last, blockTimestamp, tick, liquidity);
+            self[indexUpdated] = transform({last: last, blockTimestamp: blockTimestamp, tick: tick, liquidity: liquidity});
         }
     }
 
@@ -193,10 +193,10 @@ library Oracle {
 
                 atOrAfter = self[(i + 1) % cardinality];
 
-                bool targetAtOrAfter = lte(time, beforeOrAt.blockTimestamp, target);
+                bool targetAtOrAfter = lte({time: time, a: beforeOrAt.blockTimestamp, b: target});
 
                 // check if we've found the answer!
-                if (targetAtOrAfter && lte(time, target, atOrAfter.blockTimestamp)) break;
+                if (targetAtOrAfter && lte({time: time, a: target, b: atOrAfter.blockTimestamp})) break;
 
                 if (!targetAtOrAfter) r = i - 1;
                 else l = i + 1;
@@ -230,13 +230,13 @@ library Oracle {
             beforeOrAt = self[index];
 
             // if the target is chronologically at or after the newest observation, we can early return
-            if (lte(time, beforeOrAt.blockTimestamp, target)) {
+            if (lte({time: time, a: beforeOrAt.blockTimestamp, b: target})) {
                 if (beforeOrAt.blockTimestamp == target) {
                     // if newest observation equals target, we're in the same block, so we can ignore atOrAfter
                     return (beforeOrAt, atOrAfter);
                 } else {
                     // otherwise, we need to transform
-                    return (beforeOrAt, transform(beforeOrAt, target, tick, liquidity));
+                    return (beforeOrAt, transform({last: beforeOrAt, blockTimestamp: target, tick: tick, liquidity: liquidity}));
                 }
             }
 
@@ -245,12 +245,12 @@ library Oracle {
             if (!beforeOrAt.initialized) beforeOrAt = self[0];
 
             // ensure that the target is chronologically at or after the oldest observation
-            if (!lte(time, beforeOrAt.blockTimestamp, target)) {
+            if (!lte({time: time, a: beforeOrAt.blockTimestamp, b: target})) {
                 revert TargetPredatesOldestObservation(beforeOrAt.blockTimestamp, target);
             }
 
             // if we've reached this point, we have to binary search
-            return binarySearch(self, time, target, index, cardinality);
+            return binarySearch({self: self, time: time, target: target, index: index, cardinality: cardinality});
         }
     }
 
@@ -279,14 +279,14 @@ library Oracle {
         unchecked {
             if (secondsAgo == 0) {
                 Observation memory last = self[index];
-                if (last.blockTimestamp != time) last = transform(last, time, tick, liquidity);
+                if (last.blockTimestamp != time) last = transform({last: last, blockTimestamp: time, tick: tick, liquidity: liquidity});
                 return (last.tickCumulative, last.secondsPerLiquidityCumulativeX128);
             }
 
             uint32 target = time - secondsAgo;
 
             (Observation memory beforeOrAt, Observation memory atOrAfter) =
-                getSurroundingObservations(self, time, target, tick, index, liquidity, cardinality);
+                getSurroundingObservations({self: self, time: time, target: target, tick: tick, index: index, liquidity: liquidity, cardinality: cardinality});
 
             if (target == beforeOrAt.blockTimestamp) {
                 // we're at the left boundary
@@ -342,7 +342,7 @@ library Oracle {
             secondsPerLiquidityCumulativeX128s = new uint144[](secondsAgos.length);
             for (uint256 i = 0; i < secondsAgos.length; i++) {
                 (tickCumulatives[i], secondsPerLiquidityCumulativeX128s[i]) =
-                    observeSingle(self, time, secondsAgos[i], tick, index, liquidity, cardinality);
+                    observeSingle({self: self, time: time, secondsAgo: secondsAgos[i], tick: tick, index: index, liquidity: liquidity, cardinality: cardinality});
             }
         }
     }
